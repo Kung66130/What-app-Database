@@ -1,0 +1,17 @@
+[Unit]
+Description=WhatsApp Agent MVP
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/whatsapp-agent
+Environment=WA_AGENT_HOST=0.0.0.0
+Environment=WA_AGENT_PORT=8080
+Environment=WA_AGENT_DATA_DIR=/home/pi/whatsapp-agent/data
+ExecStart=/usr/bin/python3 /home/pi/whatsapp-agent/main.py serve
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

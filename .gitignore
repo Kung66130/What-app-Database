@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+data/
+deliverables/
+qa_render/
+docx_tools/
+build_whatsapp_plan.py
+
+*.db
+*.sqlite
+*.sqlite3
+
+.DS_Store
+Thumbs.db
