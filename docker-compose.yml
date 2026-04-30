@@ -1,0 +1,15 @@
+services:
+  whatsapp-agent:
+    container_name: whatsapp-agent
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      WA_AGENT_HOST: 0.0.0.0
+      WA_AGENT_PORT: 8080
+      WA_AGENT_DATA_DIR: /app/data
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data

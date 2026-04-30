@@ -1,59 +1,67 @@
 # Raspberry Pi 5 Deployment
 
-ไฟล์นี้คือแนวทาง deploy MVP ไป Raspberry Pi 5 โดยตรง
+ไฟล์นี้คือแนวทาง deploy MVP ไป Raspberry Pi 5 แบบรันใน container
 
 ## แนวคิด
 
-- ใช้ `sqlite3` ในเครื่อง Pi ได้เลย เหมาะกับ MVP และงานภายใน
-- รันเป็น `systemd service` เพื่อให้บูตแล้วขึ้นอัตโนมัติ
-- ถ้าจะเรียกจากเครื่องอื่นในวง LAN ให้ bind ที่ `0.0.0.0`
+- ใช้ `sqlite3` ใน volume ของเครื่อง Pi ได้เลย เหมาะกับ MVP และงานภายใน
+- รันผ่าน `docker compose` เพื่อให้จัดการ container ได้ง่าย
+- ถ้าต้องการให้เครื่องอื่นในวง LAN เรียกได้ ให้ map port `8080:8080`
 
 ## โครงที่แนะนำบน Pi
 
 ```text
-/home/pi/whatsapp-agent
+/home/admin/what-app-database
 ├── app/
 ├── data/
 ├── sample_data/
-├── main.py
-└── deploy/wa-agent.service
+├── Dockerfile
+└── docker-compose.yml
 ```
 
 ## ติดตั้งแบบเร็ว
 
-1. คัดลอกโปรเจ็กต์ไปที่ Pi เช่น `/home/pi/whatsapp-agent`
+1. clone repo ลง Pi
 2. เข้า shell บน Pi แล้วรัน:
 
 ```bash
-cd /home/pi/whatsapp-agent
-python3 main.py init-db
-python3 main.py import ./sample_data/uk_team_export.txt --group "UK Team"
-python3 main.py serve
+cd /home/admin
+git clone https://github.com/Kung66130/What-app-Database.git what-app-database
+cd /home/admin/what-app-database
+mkdir -p data
+docker compose up -d --build
 ```
 
-ถ้าต้องการให้เครื่องอื่นเรียกได้:
+เช็กสถานะ:
 
 ```bash
-WA_AGENT_HOST=0.0.0.0 WA_AGENT_PORT=8080 python3 main.py serve
+docker compose ps
+docker compose logs -n 100
 ```
 
-## ติดตั้งเป็น systemd service
+## import ข้อมูลตัวอย่างหรือไฟล์จริง
 
-แก้ path ใน `deploy/wa-agent.service` ให้ตรงกับเครื่องจริงก่อน โดยเฉพาะ:
-
-- `User`
-- `WorkingDirectory`
-- `WA_AGENT_DATA_DIR`
-- `ExecStart`
-
-จากนั้นติดตั้ง:
+ถ้าต้องการ import sample data ผ่าน container:
 
 ```bash
-sudo cp deploy/wa-agent.service /etc/systemd/system/wa-agent.service
-sudo systemctl daemon-reload
-sudo systemctl enable wa-agent
-sudo systemctl start wa-agent
-sudo systemctl status wa-agent
+cd /home/admin/what-app-database
+docker compose exec whatsapp-agent python main.py import ./sample_data/uk_team_export.txt --group "UK Team"
+```
+
+หรือส่งไฟล์จริงเข้า API:
+
+```bash
+curl -X POST http://127.0.0.1:8080/imports/whatsapp \
+  -H 'Content-Type: application/json' \
+  --data-binary @payload.json
+```
+
+## อัปเดตเวอร์ชันจาก GitHub
+
+```bash
+cd /home/admin/what-app-database
+git pull
+docker compose up -d --build
 ```
 
 ## ทดสอบ
@@ -74,3 +82,4 @@ curl http://<PI_IP>:8080/health
 
 - ตอนนี้ยังไม่มี auth ถ้าจะเปิดให้คนอื่นในวง network ใช้จริง ควรใส่ reverse proxy หรือ token ก่อน
 - ถ้าข้อมูลเริ่มโตมากหรือมีหลายคนใช้งานพร้อมกัน ควรขยับจาก SQLite ไป PostgreSQL ในรอบถัดไป
+- ข้อมูลฐานจะอยู่ใน `./data` บนเครื่อง Pi ผ่าน bind mount

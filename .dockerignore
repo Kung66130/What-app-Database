@@ -1,0 +1,11 @@
+.git
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+data/
+deliverables/
+qa_render/
+docx_tools/
+build_whatsapp_plan.py

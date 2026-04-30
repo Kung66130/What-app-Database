@@ -1,6 +1,6 @@
 # WhatsApp Agent MVP
 
-โปรเจ็กต์นี้คือ MVP ของระบบตามแผน `WhatsApp Chat Database & AI Agent System` แต่ทำให้รันได้จริงโดยไม่ต้องติดตั้ง dependency เพิ่ม ใช้ `sqlite3` และ `http.server` จาก Python standard library และตอนนี้จัดโครงให้เหมาะกับการเอาไปรันบน Raspberry Pi 5 ได้แล้ว
+โปรเจ็กต์นี้คือ MVP ของระบบตามแผน `WhatsApp Chat Database & AI Agent System` แต่ทำให้รันได้จริงโดยไม่ต้องติดตั้ง dependency เพิ่ม ใช้ `sqlite3` และ `http.server` จาก Python standard library และตอนนี้จัดโครงให้เหมาะกับการเอาไปรันบน Raspberry Pi 5 แบบ container ได้แล้ว
 
 ## ความสามารถตอนนี้
 
@@ -19,7 +19,8 @@
 - `app/services.py` ingestion, search, และ answer logic
 - `app/server.py` local JSON API
 - `sample_data/uk_team_export.txt` ไฟล์ตัวอย่างสำหรับทดสอบ
-- `deploy/wa-agent.service` ตัวอย่าง systemd service สำหรับ Raspberry Pi
+- `Dockerfile` สำหรับ build image
+- `docker-compose.yml` สำหรับรันบน Pi
 - `PI_SETUP.md` คู่มือติดตั้งบน Raspberry Pi 5
 
 ## เริ่มใช้งาน
@@ -50,13 +51,20 @@ C:\Users\kung6\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\p
 
 Server จะฟังที่ `http://127.0.0.1:8080`
 
+## รันแบบ container
+
+```bash
+docker compose up -d --build
+docker compose ps
+```
+
 ## เป้าหมาย Raspberry Pi 5
 
 ตัวนี้เหมาะกับ Pi มากกว่า Render ในสถานะปัจจุบัน เพราะ:
 
 - ใช้ SQLite local ได้ตรง ๆ
 - ไม่มี dependency หนัก
-- รันเป็น `systemd` ได้ง่าย
+- รันเป็น container ได้ง่าย
 - ไม่ต้องกังวลเรื่อง ephemeral filesystem แบบแพลตฟอร์ม cloud
 
 ดูขั้นตอน deploy เพิ่มที่ [PI_SETUP.md](C:/Project/Whatapp%20Agent/PI_SETUP.md)
