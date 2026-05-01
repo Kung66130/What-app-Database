@@ -109,6 +109,10 @@ def import_export_file(file_path: str, group_name: str, source_owner: str | None
     with path.open("r", encoding="utf-8") as f:
         content = f.read()
 
+    return import_export_content(group_name, str(path.name), content, source_owner)
+
+
+def import_export_content(group_name: str, file_name: str, content: str, source_owner: str | None = None) -> ImportResult:
     messages = parse_whatsapp_export(content)
     
     conn = get_connection()
@@ -116,17 +120,14 @@ def import_export_file(file_path: str, group_name: str, source_owner: str | None
         # 1. Create Import Batch
         cursor = conn.execute(
             "INSERT INTO import_batches (group_name, owner_name, source_file) VALUES (?, ?, ?)",
-            (group_name, source_owner, str(path.name))
+            (group_name, source_owner, file_name)
         )
         batch_id = cursor.lastrowid
         
         # 2. Insert Users and Messages
         for msg in messages:
             # Upsert User
-            user_cursor = conn.execute(
-                "INSERT OR IGNORE INTO users (name) VALUES (?)",
-                (msg.sender,)
-            )
+            conn.execute("INSERT OR IGNORE INTO users (name) VALUES (?)", (msg.sender,))
             
             # Insert Message
             conn.execute(
