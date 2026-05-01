@@ -26,6 +26,7 @@ services:
       - SERVER_URL=http://localhost:8081
       - AUTH_KEY=wa-agent-secret-key
       - DATABASE_ENABLED=false
+      - DATABASE_PROVIDER=mysql
       - REDIS_ENABLED=true
       - REDIS_URI=redis://redis:6379
       - WEBHOOK_GLOBAL_ENABLED=true
