@@ -28,8 +28,7 @@ services:
       - DATABASE_ENABLED=true
       - DATABASE_PROVIDER=postgresql
       - DATABASE_CONNECTION_URI=postgresql://root:wa-agent-pass@postgres-wa:5432/evolution?schema=public
-      - REDIS_ENABLED=true
-      - REDIS_URI=redis://redis:6379
+      - REDIS_ENABLED=false
       - WEBHOOK_GLOBAL_ENABLED=true
       - WEBHOOK_GLOBAL_URL=http://whatsapp-agent:8080/webhooks/whatsapp
       - WEBHOOK_EVENTS_ERRORS=true
