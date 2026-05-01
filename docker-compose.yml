@@ -20,7 +20,7 @@ services:
 
   evolution-api:
     container_name: evolution-api
-    image: atendare/evolution-api:latest
+    image: evolutionapi/evolution-api:latest
     restart: unless-stopped
     environment:
       - SERVER_URL=http://localhost:8081
