@@ -23,7 +23,8 @@ services:
     image: evoapicloud/evolution-api:latest
     restart: unless-stopped
     environment:
-      - SERVER_URL=http://localhost:8081
+      - SERVER_URL=http://100.123.233.122:8081
+      - AUTHENTICATION_TYPE=apikey
       - AUTHENTICATION_API_KEY=wa-agent-secret-key
       - DATABASE_ENABLED=true
       - DATABASE_PROVIDER=postgresql
