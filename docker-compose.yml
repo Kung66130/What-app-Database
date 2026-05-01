@@ -26,7 +26,8 @@ services:
       - SERVER_URL=http://localhost:8081
       - AUTH_KEY=wa-agent-secret-key
       - DATABASE_ENABLED=false
-      - DATABASE_PROVIDER=mysql
+      - DATABASE_PROVIDER=sqlite
+      - DATABASE_CONNECTION_URI=file:///tmp/evolution.db
       - REDIS_ENABLED=true
       - REDIS_URI=redis://redis:6379
       - WEBHOOK_GLOBAL_ENABLED=true
