@@ -25,11 +25,11 @@ services:
     environment:
       - SERVER_URL=http://localhost:8081
       - AUTH_KEY=wa-agent-secret-key
-      - DATABASE_ENABLED=false
-      - DATABASE_PROVIDER=sqlite
-      - DATABASE_CONNECTION_URI=file:///tmp/evolution.db
+      - DATABASE_ENABLED=true
+      - DATABASE_PROVIDER=postgresql
+      - DATABASE_CONNECTION_URI=postgresql://root:wa-agent-pass@postgres-wa:5432/evolution?schema=public
       - REDIS_ENABLED=true
-      - REDIS_URI=redis://redis:6379
+      - REDIS_URI=redis://redis-wa:6379
       - WEBHOOK_GLOBAL_ENABLED=true
       - WEBHOOK_GLOBAL_URL=http://whatsapp-agent:8080/webhooks/whatsapp
       - WEBHOOK_EVENTS_ERRORS=true
@@ -38,6 +38,7 @@ services:
       - "8081:8081"
     depends_on:
       - redis
+      - postgres
     networks:
       - whatsapp-network
 
@@ -45,6 +46,19 @@ services:
     container_name: redis-wa
     image: redis:7-alpine
     restart: unless-stopped
+    networks:
+      - whatsapp-network
+
+  postgres:
+    container_name: postgres-wa
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=root
+      - POSTGRES_PASSWORD=wa-agent-pass
+      - POSTGRES_DB=evolution
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
     networks:
       - whatsapp-network
 
