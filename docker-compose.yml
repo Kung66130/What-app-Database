@@ -9,7 +9,42 @@ services:
       WA_AGENT_HOST: 0.0.0.0
       WA_AGENT_PORT: 8080
       WA_AGENT_DATA_DIR: /app/data
+    env_file:
+      - .env
     ports:
       - "8080:8080"
     volumes:
       - ./data:/app/data
+    networks:
+      - whatsapp-network
+
+  evolution-api:
+    container_name: evolution-api
+    image: atendare/evolution-api:latest
+    restart: unless-stopped
+    environment:
+      - SERVER_URL=http://localhost:8081
+      - AUTH_KEY=wa-agent-secret-key
+      - REDIS_ENABLED=true
+      - REDIS_URI=redis://redis:6379
+      - WEBHOOK_GLOBAL_ENABLED=true
+      - WEBHOOK_GLOBAL_URL=http://whatsapp-agent:8080/webhooks/whatsapp
+      - WEBHOOK_EVENTS_ERRORS=true
+      - WEBHOOK_EVENTS_MESSAGES_UPSERT=true
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+    networks:
+      - whatsapp-network
+
+  redis:
+    container_name: redis-wa
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks:
+      - whatsapp-network
+
+networks:
+  whatsapp-network:
+    driver: bridge

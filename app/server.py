@@ -6,7 +6,18 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from .config import settings
-from .services import ask_agent, export_state, import_export_content, list_groups, list_import_batches, search_messages
+from .services import (
+    ask_agent,
+    export_state,
+    handle_evolution_webhook,
+    handle_slack_command,
+    import_export_content,
+    list_groups,
+    list_import_batches,
+    list_users,
+    search_messages,
+    verify_slack_signature,
+)
 
 
 class ApiHandler(BaseHTTPRequestHandler):
@@ -23,6 +34,11 @@ class ApiHandler(BaseHTTPRequestHandler):
 
         if path == "/groups":
             self._write_json({"groups": list_groups()})
+            return
+
+        if path == "/users":
+            limit = int(query.get("limit", ["100"])[0])
+            self._write_json({"users": list_users(limit=limit)})
             return
 
         if path == "/imports":
@@ -79,6 +95,35 @@ class ApiHandler(BaseHTTPRequestHandler):
                 date_to=body.get("date_to"),
                 limit=int(body.get("limit", 8)),
             )
+            self._write_json(result)
+            return
+
+        if path == "/slack/command":
+            content_length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(content_length)
+            
+            timestamp = self.headers.get("X-Slack-Request-Timestamp", "")
+            signature = self.headers.get("X-Slack-Signature", "")
+            
+            if not verify_slack_signature(timestamp, signature, raw_body):
+                print(f"Unauthorized Slack request from {self.client_address}")
+                self._write_json({"error": "Unauthorized"}, status=HTTPStatus.UNAUTHORIZED)
+                return
+            
+            params = parse_qs(raw_body.decode("utf-8"))
+            text = params.get("text", [""])[0]
+            channel_id = params.get("channel_id", [""])[0]
+            response_url = params.get("response_url", [None])[0]
+            
+            print(f"Slack command received: {text} in {channel_id}")
+            result = handle_slack_command(text, channel_id=channel_id, response_url=response_url)
+            self._write_json(result)
+            return
+
+        if path == "/webhooks/whatsapp":
+            # This endpoint is for Evolution API
+            # Note: You might want to add a secret key check here for security
+            result = handle_evolution_webhook(body)
             self._write_json(result)
             return
 

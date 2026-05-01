@@ -1,0 +1,21 @@
+display_information:
+  name: "WhatsApp Agent"
+  description: "AI WhatsApp Assistant on Pi 5"
+  background_color: "#075e54"
+features:
+  bot_user:
+    display_name: "WhatsApp Agent"
+    always_online: false
+  slash_commands:
+    - command: "/wa"
+      url: "https://raspberrykung.taild7aac2.ts.net/slack/command"
+      description: "ถาม AI หรือค้นหาแชท WhatsApp"
+      usage_hint: "[ask|search] ข้อความที่ต้องการ"
+oauth_config:
+  scopes:
+    bot:
+      - "commands"
+settings:
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

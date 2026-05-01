@@ -5,7 +5,7 @@ import json
 
 from app.db import init_db
 from app.server import run_server
-from app.services import ask_agent, import_export_file, list_groups, list_import_batches, search_messages
+from app.services import ask_agent, export_state, import_export_file, list_groups, list_import_batches, list_users, search_messages
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -38,6 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("groups", help="List groups")
     sub.add_parser("imports", help="List import batches")
+    sub.add_parser("users", help="List users and message counts")
     return parser
 
 
@@ -89,6 +90,10 @@ def main() -> None:
 
     if args.command == "imports":
         print(json.dumps(list_import_batches(), ensure_ascii=False, indent=2))
+        return
+
+    if args.command == "users":
+        print(json.dumps(list_users(), ensure_ascii=False, indent=2))
         return
 
 

@@ -6,6 +6,7 @@
 
 - ใช้ `sqlite3` ใน volume ของเครื่อง Pi ได้เลย เหมาะกับ MVP และงานภายใน
 - รันผ่าน `docker compose` เพื่อให้จัดการ container ได้ง่าย
+- ถ้าต้องการใช้ฟีเจอร์ AI Agent (RAG) ให้ติดตั้ง **Ollama** บนเครื่อง Pi เพิ่มเติม (ดูรายละเอียดด้านล่าง)
 - ถ้าต้องการให้เครื่องอื่นในวง LAN เรียกได้ ให้ map port `8080:8080`
 
 ## โครงที่แนะนำบน Pi
@@ -78,8 +79,49 @@ curl http://127.0.0.1:8080/health
 curl http://<PI_IP>:8080/health
 ```
 
-## หมายเหตุ
+## การตั้งค่า AI Agent (Ollama)
 
-- ตอนนี้ยังไม่มี auth ถ้าจะเปิดให้คนอื่นในวง network ใช้จริง ควรใส่ reverse proxy หรือ token ก่อน
-- ถ้าข้อมูลเริ่มโตมากหรือมีหลายคนใช้งานพร้อมกัน ควรขยับจาก SQLite ไป PostgreSQL ในรอบถัดไป
-- ข้อมูลฐานจะอยู่ใน `./data` บนเครื่อง Pi ผ่าน bind mount
+แอปนี้รองรับการตอบคำถามแบบ AI โดยใช้ **Ollama** รันบนเครื่อง Pi 5:
+
+1. **ติดตั้ง Ollama บน Pi 5:**
+   ```bash
+   curl -fsSL https://ollama.com/install.sh | sh
+   ```
+
+2. **ดาวน์โหลดโมเดลที่แนะนำ (llama3.2):**
+   ```bash
+   ollama pull llama3.2
+   ```
+   *หมายเหตุ: Pi 5 รัน llama3.2 ได้รวดเร็วและประหยัด RAM*
+
+3. **ตรวจสอบว่า Ollama รันอยู่:**
+   ```bash
+   curl http://127.0.0.1:11434
+   ```
+   (ถ้าขึ้นว่า `Ollama is running` แสดงว่าพร้อมใช้งาน)
+
+เมื่อ Ollama พร้อมแล้ว คำสั่ง `ask` หรือ `/agent/ask` จะเปลี่ยนจากการค้นหาข้อความเฉยๆ เป็นการสรุปคำตอบด้วย AI ทันทีครับ
+
+## การตั้งค่าดึงข้อมูลอัตโนมัติ (Live Sync)
+
+โปรเจ็กต์นี้รองรับการดึงข้อมูลจากกลุ่มและแชทส่วนตัวอัตโนมัติผ่าน **Evolution API**:
+
+1.  **รันระบบด้วย Docker Compose**:
+    ```bash
+    docker compose up -d
+    ```
+    *(ระบบจะรัน 3 ตัว: whatsapp-agent, evolution-api, และ redis)*
+
+2.  **สร้าง Instance และสแกน QR Code**:
+    - เข้าไปที่หน้าจัดการ Evolution API (Default: `http://<PI_IP>:8081`)
+    - หรือใช้โปรแกรมจัดการเช่น **Evolution Manager**
+    - สร้าง Instance ใหม่ (เช่นชื่อ `my-account`)
+    - สแกน QR Code ด้วยแอป WhatsApp ในมือถือของคุณ
+
+3.  **ตั้งค่า Webhook (ถ้ายังไม่ได้ตั้งใน config)**:
+    - ตรวจสอบว่า Webhook URL ชี้ไปที่ `http://whatsapp-agent:8080/webhooks/whatsapp`
+    - เปิดใช้งาน Event `MESSAGES_UPSERT`
+
+เมื่อเชื่อมต่อสำเร็จ ทุกข้อความที่ไหลเข้าใน WhatsApp (รวมถึงในกลุ่ม) จะถูกบันทึกลง SQLite โดยอัตโนมัติใน Batch ที่ชื่อว่า `LIVE_SYNC` ครับ
+
+## หมายเหตุเพิ่มเติม

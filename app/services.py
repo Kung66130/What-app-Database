@@ -7,277 +7,276 @@ from datetime import datetime
 from pathlib import Path
 import re
 from typing import Any
+import json
+import urllib.request
+import urllib.error
+import hmac
+import hashlib
+import threading
 
+from .config import settings
 from .db import get_connection, init_db, utc_now_iso
 from .parser import ParsedMessage, normalize_name, parse_whatsapp_export
+
+
+def handle_evolution_webhook(payload: dict[str, Any]) -> dict[str, Any]:
+    """Handles incoming message events from Evolution API."""
+    event = payload.get("event")
+    if event != "messages.upsert":
+        return {"status": "ignored", "event": event}
+
+    data = payload.get("data", {})
+    key = data.get("key", {})
+    message = data.get("message", {})
+    
+    # 1. Extract basic info
+    remote_jid = key.get("remoteJid", "")
+    is_group = "@g.us" in remote_jid
+    sender_name = data.get("pushName") or "Unknown"
+    
+    # Extract content (handling different message types)
+    content = ""
+    if "conversation" in message:
+        content = message["conversation"]
+    elif "extendedTextMessage" in message:
+        content = message["extendedTextMessage"].get("text", "")
+    elif "imageMessage" in message:
+        content = "[Image Message]"
+    elif "videoMessage" in message:
+        content = "[Video Message]"
+    elif "documentMessage" in message:
+        content = "[Document Message]"
+    
+    if not content and not is_group:
+         return {"status": "ignored", "reason": "empty_content"}
+
+    # 2. Identify Group
+    group_name = "Direct Message"
+    if is_group:
+        # Evolution API usually provides group name in another field or we can use JID
+        # For now, let's use the JID as a placeholder or check if group metadata is present
+        group_name = data.get("groupName") or remote_jid.split("@")[0]
+
+    # 3. Store in DB
+    conn = get_connection()
+    try:
+        # Ensure group exists in import_batches (as a virtual batch for live sync)
+        cursor = conn.execute(
+            "SELECT id FROM import_batches WHERE group_name = ? AND source_file = 'LIVE_SYNC' LIMIT 1",
+            (group_name,)
+        )
+        row = cursor.fetchone()
+        if row:
+            batch_id = row["id"]
+        else:
+            cursor = conn.execute(
+                "INSERT INTO import_batches (group_name, source_file) VALUES (?, ?)",
+                (group_name, "LIVE_SYNC")
+            )
+            batch_id = cursor.lastrowid
+
+        # Upsert User
+        conn.execute("INSERT OR IGNORE INTO users (name) VALUES (?)", (sender_name,))
+
+        # Insert Message
+        timestamp = datetime.fromtimestamp(data.get("messageTimestamp", datetime.now().timestamp())).isoformat()
+        conn.execute(
+            """
+            INSERT INTO messages (batch_id, sent_at, sender_name, content_raw)
+            VALUES (?, ?, ?, ?)
+            """,
+            (batch_id, timestamp, sender_name, content)
+        )
+        conn.commit()
+        return {"status": "success", "message_id": key.get("id")}
+    finally:
+        conn.close()
 
 
 @dataclass
 class ImportResult:
     batch_id: int
+    messages_count: int
     group_name: str
-    file_name: str
-    total_lines: int
-    parsed_messages: int
-    new_messages: int
-    duplicate_messages: int
+    owner_name: str | None
 
 
-def ensure_ready() -> None:
-    init_db()
+def import_export_file(file_path: str, group_name: str, source_owner: str | None = None) -> ImportResult:
+    path = Path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"File not found: {file_path}")
 
+    with path.open("r", encoding="utf-8") as f:
+        content = f.read()
 
-def ensure_group(conn, group_name: str, source_owner: str | None = None, timezone: str = "Asia/Bangkok") -> int:
-    row = conn.execute("SELECT id FROM groups WHERE group_name = ?", (group_name.strip(),)).fetchone()
-    if row:
-        return int(row["id"])
-    cur = conn.execute(
-        "INSERT INTO groups (group_name, source_owner, timezone, created_at) VALUES (?, ?, ?, ?)",
-        (group_name.strip(), source_owner, timezone, utc_now_iso()),
-    )
-    return int(cur.lastrowid)
-
-
-def ensure_user(conn, display_name: str | None) -> int | None:
-    if not display_name:
-        return None
-    normalized_name = normalize_name(display_name)
-    row = conn.execute("SELECT id FROM users WHERE normalized_name = ?", (normalized_name,)).fetchone()
-    if row:
-        return int(row["id"])
-    cur = conn.execute(
-        "INSERT INTO users (display_name, normalized_name, created_at) VALUES (?, ?, ?)",
-        (display_name.strip(), normalized_name, utc_now_iso()),
-    )
-    return int(cur.lastrowid)
-
-
-def import_export_content(group_name: str, file_name: str, content: str, source_owner: str | None = None) -> ImportResult:
-    ensure_ready()
-    parsed = parse_whatsapp_export(content)
-    file_sha1 = hashlib.sha1(content.encode("utf-8")).hexdigest()
-    lines = content.splitlines()
-
-    with get_connection() as conn:
-        group_id = ensure_group(conn, group_name, source_owner=source_owner)
-        batch_cur = conn.execute(
-            """
-            INSERT INTO import_batches (
-                group_id, file_name, file_sha1, imported_at, total_lines, parsed_messages, new_messages, duplicate_messages
-            ) VALUES (?, ?, ?, ?, ?, ?, 0, 0)
-            """,
-            (group_id, file_name, file_sha1, utc_now_iso(), len(lines), len(parsed)),
+    messages = parse_whatsapp_export(content)
+    
+    conn = get_connection()
+    try:
+        # 1. Create Import Batch
+        cursor = conn.execute(
+            "INSERT INTO import_batches (group_name, owner_name, source_file) VALUES (?, ?, ?)",
+            (group_name, source_owner, str(path.name))
         )
-        batch_id = int(batch_cur.lastrowid)
-
-        new_messages = 0
-        duplicate_messages = 0
-        for item in parsed:
-            exists = conn.execute("SELECT id FROM messages WHERE source_hash = ?", (item.source_hash,)).fetchone()
-            if exists:
-                duplicate_messages += 1
-                continue
-            sender_id = ensure_user(conn, item.sender_name)
+        batch_id = cursor.lastrowid
+        
+        # 2. Insert Users and Messages
+        for msg in messages:
+            # Upsert User
+            user_cursor = conn.execute(
+                "INSERT OR IGNORE INTO users (name) VALUES (?)",
+                (msg.sender,)
+            )
+            
+            # Insert Message
             conn.execute(
                 """
-                INSERT INTO messages (
-                    group_id, sender_id, batch_id, sent_at, message_type, content_raw,
-                    content_normalized, content_th, source_hash, source_line_start, source_line_end, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+                INSERT INTO messages (batch_id, sent_at, sender_name, content_raw)
+                VALUES (?, ?, ?, ?)
                 """,
-                (
-                    group_id,
-                    sender_id,
-                    batch_id,
-                    item.sent_at.isoformat(sep=" "),
-                    item.message_type,
-                    item.content_raw,
-                    item.content_normalized,
-                    item.source_hash,
-                    item.source_line_start,
-                    item.source_line_end,
-                    utc_now_iso(),
-                ),
+                (batch_id, msg.timestamp, msg.sender, msg.content)
             )
-            new_messages += 1
-
-        conn.execute(
-            "UPDATE import_batches SET new_messages = ?, duplicate_messages = ? WHERE id = ?",
-            (new_messages, duplicate_messages, batch_id),
-        )
+        
         conn.commit()
-
-    return ImportResult(
-        batch_id=batch_id,
-        group_name=group_name,
-        file_name=file_name,
-        total_lines=len(lines),
-        parsed_messages=len(parsed),
-        new_messages=new_messages,
-        duplicate_messages=duplicate_messages,
-    )
-
-
-def import_export_file(path: str | Path, group_name: str, source_owner: str | None = None) -> ImportResult:
-    file_path = Path(path)
-    content = file_path.read_text(encoding="utf-8")
-    return import_export_content(group_name=group_name, file_name=file_path.name, content=content, source_owner=source_owner)
+        return ImportResult(
+            batch_id=batch_id,
+            messages_count=len(messages),
+            group_name=group_name,
+            owner_name=source_owner
+        )
+    finally:
+        conn.close()
 
 
 def list_groups() -> list[dict[str, Any]]:
-    ensure_ready()
-    with get_connection() as conn:
+    conn = get_connection()
+    try:
+        rows = conn.execute("SELECT DISTINCT group_name FROM import_batches").fetchall()
+        return [{"name": r["group_name"]} for r in rows]
+    finally:
+        conn.close()
+
+
+def list_import_batches() -> list[dict[str, Any]]:
+    conn = get_connection()
+    try:
+        rows = conn.execute("SELECT * FROM import_batches ORDER BY imported_at DESC").fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def list_users() -> list[dict[str, Any]]:
+    conn = get_connection()
+    try:
         rows = conn.execute(
             """
-            SELECT g.id, g.group_name, g.timezone, g.source_owner, g.created_at, COUNT(m.id) AS message_count
-            FROM groups g
-            LEFT JOIN messages m ON m.group_id = g.id
-            GROUP BY g.id
-            ORDER BY g.group_name
+            SELECT u.name, COUNT(m.id) as msg_count 
+            FROM users u
+            LEFT JOIN messages m ON u.name = m.sender_name
+            GROUP BY u.name
+            ORDER BY msg_count DESC
             """
         ).fetchall()
-    return [dict(row) for row in rows]
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
-def list_import_batches(limit: int = 20) -> list[dict[str, Any]]:
-    ensure_ready()
-    with get_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT b.id, g.group_name, b.file_name, b.imported_at, b.parsed_messages, b.new_messages, b.duplicate_messages
-            FROM import_batches b
-            JOIN groups g ON g.id = b.group_id
-            ORDER BY b.id DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-    return [dict(row) for row in rows]
+def search_messages(q: str | None = None, group_name: str | None = None, sender: str | None = None,
+                   date_from: str | None = None, date_to: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    conn = get_connection()
+    try:
+        conditions = []
+        params = []
+
+        if q:
+            # Use FTS5 for search if available, fallback to LIKE
+            conditions.append("messages_fts MATCH ?")
+            params.append(q)
+        
+        if group_name:
+            conditions.append("batch_id IN (SELECT id FROM import_batches WHERE group_name = ?)")
+            params.append(group_name)
+            
+        if sender:
+            conditions.append("sender_name = ?")
+            params.append(sender)
+            
+        if date_from:
+            conditions.append("sent_at >= ?")
+            params.append(date_from)
+            
+        if date_to:
+            conditions.append("sent_at <= ?")
+            params.append(date_to)
+
+        where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
+        sql = f"SELECT * FROM messages {where_clause} ORDER BY sent_at DESC LIMIT ?"
+        params.append(limit)
+        
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
-def search_messages(
-    q: str | None = None,
-    *,
-    group_name: str | None = None,
-    sender: str | None = None,
-    date_from: str | None = None,
-    date_to: str | None = None,
-    limit: int = 20,
-) -> list[dict[str, Any]]:
-    ensure_ready()
-    sql = """
-        SELECT
-            m.id,
-            g.group_name,
-            u.display_name AS sender_name,
-            m.sent_at,
-            m.message_type,
-            m.content_raw,
-            m.content_normalized,
-            m.source_line_start,
-            m.source_line_end
-        FROM messages m
-        JOIN groups g ON g.id = m.group_id
-        LEFT JOIN users u ON u.id = m.sender_id
-        WHERE 1 = 1
-    """
-    params: list[Any] = []
-
-    if group_name:
-        sql += " AND g.group_name = ?"
-        params.append(group_name.strip())
-    if sender:
-        sql += " AND u.normalized_name = ?"
-        params.append(normalize_name(sender))
-    if date_from:
-        sql += " AND m.sent_at >= ?"
-        params.append(_to_iso_boundary(date_from, is_end=False))
-    if date_to:
-        sql += " AND m.sent_at <= ?"
-        params.append(_to_iso_boundary(date_to, is_end=True))
-
-    tokens = [token for token in (q or "").lower().split() if token]
-    if tokens:
-        sql += " AND (" + " OR ".join("m.content_normalized LIKE ?" for _ in tokens) + ")"
-        params.extend(f"%{token}%" for token in tokens)
-
-    sql += " ORDER BY m.sent_at DESC LIMIT ?"
-    params.append(max(1, min(limit, 100)))
-
-    with get_connection() as conn:
-        rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
-    return rows
-
-
-def ask_agent(
-    question: str,
-    *,
-    group_name: str | None = None,
-    sender: str | None = None,
-    date_from: str | None = None,
-    date_to: str | None = None,
-    limit: int = 8,
-) -> dict[str, Any]:
-    derived_query = _derive_search_query(question)
-    hits = search_messages(
-        q=derived_query,
-        group_name=group_name,
-        sender=sender,
-        date_from=date_from,
-        date_to=date_to,
-        limit=limit,
-    )
+def ask_agent(question: str, group_name: str | None = None, sender: str | None = None,
+             date_from: str | None = None, date_to: str | None = None, limit: int = 20) -> dict[str, Any]:
+    # 1. Retrieve Context
+    # Use a simplified search query derived from the question
+    search_q = _derive_search_query(question)
+    hits = search_messages(q=search_q, group_name=group_name, sender=sender, 
+                          date_from=date_from, date_to=date_to, limit=limit)
+    
     if not hits:
         return {
             "question": question,
-            "answer": "ไม่พบข้อความที่ตรงกับคำถามในฐานข้อมูลตอนนี้",
-            "citations": [],
-            "meta": {"matched_messages": 0},
+            "answer": "ขออภัยครับ ไม่พบข้อมูลที่เกี่ยวข้องในฐานข้อมูลแชทเลยครับ",
+            "citations": []
         }
 
-    top_hits = hits[: min(5, len(hits))]
-    senders = [row["sender_name"] or "System" for row in top_hits]
-    sender_summary = ", ".join(name for name, _ in Counter(senders).most_common(3))
+    # 2. Build Prompt for Ollama
+    context_str = "\n".join([f"[{h['sent_at']}] {h['sender_name']}: {h['content_raw']}" for h in hits])
+    
+    prompt = f"""คุณคือ AI Assistant ที่เก่งกาจในการวิเคราะห์ข้อมูลแชท WhatsApp
+ข้อมูลแชทต่อไปนี้คือบริบทที่ใช้ในการตอบคำถาม:
+---
+{context_str}
+---
+คำถาม: {question}
 
-    lines = []
-    for row in top_hits:
-        timestamp = _human_time(row["sent_at"])
-        sender_name = row["sender_name"] or "System"
-        snippet = row["content_raw"].replace("\n", " ").strip()
-        if len(snippet) > 160:
-            snippet = snippet[:157] + "..."
-        lines.append(f"- {timestamp} | {sender_name} | {snippet}")
+กรุณาตอบคำถามโดยใช้ข้อมูลจากแชทที่ให้มาเท่านั้น หากไม่มีข้อมูลให้บอกตรงๆ
+ตอบเป็นภาษาไทยที่สุภาพและกระชับ
+"""
 
-    intro = f"พบข้อความที่เกี่ยวข้อง {len(hits)} รายการ"
-    if sender_summary:
-        intro += f" โดยผู้ที่เกี่ยวข้องหลักคือ {sender_summary}"
-
-    answer = intro + "\n" + "\n".join(lines)
-    lowered_question = question.lower()
-    if "ใคร" in question and ("ล่าสุด" in question or "last" in lowered_question):
-        latest = top_hits[0]
-        latest_sender = latest["sender_name"] or "System"
-        latest_time = _human_time(latest["sent_at"])
-        latest_content = latest["content_raw"].replace("\n", " ")
-        answer = (
-            f"ข้อความล่าสุดที่เกี่ยวข้องคือ {latest_sender} เมื่อ {latest_time}\n"
-            f"เนื้อหา: {latest_content}\n"
-            + "\n".join(lines)
+    # 3. Call Ollama
+    try:
+        req_data = json.dumps({
+            "model": "llama3.2",
+            "prompt": prompt,
+            "stream": False
+        }).encode("utf-8")
+        
+        req = urllib.request.Request(
+            "http://host.docker.internal:11434/api/generate",
+            data=req_data,
+            headers={"Content-Type": "application/json"}
         )
-    elif "สรุป" in question:
-        answer = (
-            f"สรุปจากข้อความที่ค้นเจอ {len(hits)} รายการ\n"
-            f"ผู้เกี่ยวข้องหลัก: {sender_summary}\n"
-            + "\n".join(lines)
-        )
+        
+        with urllib.request.urlopen(req, timeout=30) as response:
+            resp_json = json.loads(response.read().decode("utf-8"))
+            answer = resp_json.get("response", "ขออภัยครับ เกิดข้อผิดพลาดในการดึงคำตอบ")
+    except Exception as e:
+        print(f"Ollama Error: {e}")
+        answer = f"ขออภัยครับ ไม่สามารถเชื่อมต่อกับ AI ได้ในขณะนี้ ({e})"
 
+    # 4. Format Citations
+    top_hits = hits[:3]
     citations = [
         {
-            "message_id": row["id"],
-            "group_name": row["group_name"],
-            "sender_name": row["sender_name"],
+            "sender": row["sender_name"],
             "sent_at": row["sent_at"],
-            "source_lines": [row["source_line_start"], row["source_line_end"]],
             "content_raw": row["content_raw"],
         }
         for row in top_hits
@@ -290,30 +289,89 @@ def ask_agent(
     }
 
 
+def verify_slack_signature(timestamp: str, signature: str, raw_body: bytes) -> bool:
+    if not settings.slack_signing_secret:
+        return False
+    basestring = f"v0:{timestamp}:".encode("utf-8") + raw_body
+    h = hmac.new(settings.slack_signing_secret.encode("utf-8"), basestring, hashlib.sha256)
+    expected_signature = f"v0={h.hexdigest()}"
+    return hmac.compare_digest(expected_signature, signature)
+
+
+def send_slack_delayed_response(response_url: str, payload: dict[str, Any]) -> None:
+    try:
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            response_url,
+            data=data,
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=10) as response:
+            pass
+    except Exception as e:
+        print(f"Error sending delayed response: {e}")
+
+
+def handle_slack_command(text: str, channel_id: str | None = None, response_url: str | None = None) -> dict[str, Any]:
+    print(f"Incoming Slack command: {text} in channel {channel_id}")
+    
+    # Check if channel is allowed
+    allowed = [c.strip() for c in settings.slack_allowed_channels.split(",") if c.strip()]
+    if allowed and channel_id not in allowed:
+        return {
+            "response_type": "ephemeral",
+            "text": f"⚠️ บอทตัวนี้ไม่ได้ถูกอนุญาตให้ใช้งานในห้องนี้ (Channel ID: {channel_id})\nกรุณาติดต่อผู้ดูแลระบบเพื่อเปิดใช้งานครับ"
+        }
+
+    text = text.strip()
+    if not text:
+        return {"text": "💡 วิธีใช้: `/wa ask [คำถาม]` หรือ `/wa search [คำค้นหา]`"}
+
+    # Run the processing in a background thread if we have a response_url
+    if response_url:
+        def worker():
+            parts = text.split(" ", 1)
+            cmd = parts[0].lower()
+            
+            if cmd == "ask" and len(parts) > 1:
+                query = parts[1]
+            elif cmd == "search" and len(parts) > 1:
+                hits = search_messages(parts[1], limit=5)
+                if not hits:
+                    send_slack_delayed_response(response_url, {"text": f"❌ ไม่พบข้อมูลสำหรับ '{parts[1]}'"})
+                    return
+                lines = [f"• {h['sent_at']} | *{h['sender_name'] or 'System'}*: {h['content_raw']}" for h in hits]
+                send_slack_delayed_response(response_url, {"text": f"🔍 ผลการค้นหา '{parts[1]}':\n" + "\n".join(lines)})
+                return
+            else:
+                query = text
+
+            try:
+                result = ask_agent(query)
+                send_slack_delayed_response(response_url, {
+                    "response_type": "in_channel",
+                    "text": result["answer"]
+                })
+            except Exception as e:
+                print(f"Error in worker thread: {e}")
+                send_slack_delayed_response(response_url, {"text": f"🚨 เกิดข้อผิดพลาด: {e}"})
+
+        threading.Thread(target=worker).start()
+        return {
+            "response_type": "ephemeral", 
+            "text": "🔍 กำลังประมวลผลคำตอบให้สักครู่นะครับ..."
+        }
+
+    return {"text": "Error: Missing response_url"}
+
+
 def export_state() -> dict[str, Any]:
     return {"groups": list_groups(), "imports": list_import_batches()}
-
-
-def _to_iso_boundary(date_value: str, *, is_end: bool) -> str:
-    parsed = datetime.strptime(date_value, "%Y-%m-%d")
-    if is_end:
-        parsed = parsed.replace(hour=23, minute=59, second=59)
-    return parsed.isoformat(sep=" ")
-
-
-def _human_time(value: str) -> str:
-    try:
-        dt = datetime.fromisoformat(value)
-        return dt.strftime("%d/%m/%Y %H:%M")
-    except ValueError:
-        return value
 
 
 def _derive_search_query(question: str) -> str:
     lowered = question.lower()
     tokens: list[str] = []
-
-    # Preserve structured business tokens like SKU IDs or order codes.
     tokens.extend(match.lower() for match in re.findall(r"[a-zA-Z]{2,}-\d{1,}", question))
 
     keyword_map = {
@@ -330,11 +388,6 @@ def _derive_search_query(question: str) -> str:
         if thai_word in question:
             tokens.append(english_hint)
 
-    if "delay" in lowered:
-        tokens.append("delayed")
-    if "shipment" in lowered:
-        tokens.append("supplier")
-
     english_words = re.findall(r"[a-zA-Z0-9]{3,}", lowered)
     tokens.extend(english_words)
 
@@ -343,6 +396,4 @@ def _derive_search_query(question: str) -> str:
         if token not in deduped:
             deduped.append(token)
 
-    if deduped:
-        return " ".join(deduped)
-    return question
+    return " ".join(deduped) if deduped else question

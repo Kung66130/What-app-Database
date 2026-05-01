@@ -63,6 +63,30 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_messages_group_sent_at ON messages(group_id, sent_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_sender_sent_at ON messages(sender_id, sent_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_content_normalized ON messages(content_normalized);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+    content_raw,
+    content_normalized,
+    content_id UNINDEXED,
+    tokenize="unicode61 remove_diacritics 1"
+);
+
+CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+  INSERT INTO messages_fts(rowid, content_raw, content_normalized, content_id)
+  VALUES (new.id, new.content_raw, new.content_normalized, new.id);
+END;
+
+CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+  INSERT INTO messages_fts(messages_fts, rowid, content_raw, content_normalized, content_id)
+  VALUES ('delete', old.id, old.content_raw, old.content_normalized, old.id);
+END;
+
+CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
+  INSERT INTO messages_fts(messages_fts, rowid, content_raw, content_normalized, content_id)
+  VALUES ('delete', old.id, old.content_raw, old.content_normalized, old.id);
+  INSERT INTO messages_fts(rowid, content_raw, content_normalized, content_id)
+  VALUES (new.id, new.content_raw, new.content_normalized, new.id);
+END;
 """
 
 
