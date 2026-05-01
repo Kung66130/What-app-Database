@@ -20,7 +20,7 @@ services:
 
   evolution-api:
     container_name: evolution-api
-    image: evolutionapi/evolution-api:latest
+    image: evoapicloud/evolution-api:latest
     restart: unless-stopped
     environment:
       - SERVER_URL=http://localhost:8081
