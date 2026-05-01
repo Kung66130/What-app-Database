@@ -24,6 +24,7 @@ services:
     restart: unless-stopped
     environment:
       - SERVER_URL=http://100.123.233.122:8081
+      - AUTHENTICATION_ENABLED=true
       - AUTHENTICATION_TYPE=apikey
       - AUTHENTICATION_API_KEY=wa-agent-secret-key
       - DATABASE_ENABLED=true
