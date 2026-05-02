@@ -258,7 +258,7 @@ def ask_agent(question: str, group_name: str | None = None, sender: str | None =
         }).encode("utf-8")
         
         req = urllib.request.Request(
-            "http://host.docker.internal:11434/api/generate",
+            "http://100.123.233.122:11434/api/generate",
             data=req_data,
             headers={"Content-Type": "application/json"}
         )
