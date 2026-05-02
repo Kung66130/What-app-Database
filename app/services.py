@@ -192,8 +192,8 @@ def search_messages(q: str | None = None, group_name: str | None = None, sender:
         params = []
 
         if q:
-            # Use FTS5 for search if available, fallback to LIKE
-            conditions.append("messages_fts MATCH ?")
+            # Use FTS5 for search via subquery
+            conditions.append("id IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?)")
             params.append(q)
         
         if group_name:
