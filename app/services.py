@@ -191,27 +191,27 @@ def search_messages(q: str | None = None, group_name: str | None = None, sender:
 
         if q:
             # Use FTS5 for search via subquery
-            conditions.append("id IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?)")
+            conditions.append("m.id IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?)")
             params.append(q)
         
         if group_name:
-            conditions.append("group_id IN (SELECT id FROM groups WHERE group_name = ?)")
+            conditions.append("m.group_id IN (SELECT id FROM groups WHERE group_name = ?)")
             params.append(group_name)
             
         if sender:
-            conditions.append("sender_name = ?")
+            conditions.append("m.sender_id IN (SELECT id FROM users WHERE display_name = ?)")
             params.append(sender)
             
         if date_from:
-            conditions.append("sent_at >= ?")
+            conditions.append("m.sent_at >= ?")
             params.append(date_from)
             
         if date_to:
-            conditions.append("sent_at <= ?")
+            conditions.append("m.sent_at <= ?")
             params.append(date_to)
 
         where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
-        sql = f"SELECT * FROM messages {where_clause} ORDER BY sent_at DESC LIMIT ?"
+        sql = f"SELECT m.*, u.display_name as sender_name FROM messages m LEFT JOIN users u ON m.sender_id = u.id {where_clause} ORDER BY m.sent_at DESC LIMIT ?"
         params.append(limit)
         
         rows = conn.execute(sql, params).fetchall()
