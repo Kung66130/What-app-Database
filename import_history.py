@@ -20,7 +20,13 @@ def run():
     print("Fetching messages from Evolution API...")
     try:
         data = fetch_messages()
-        print(f"Got response. Status: {data.get('status')}")
+        if isinstance(data, dict):
+            print(f"Keys: {data.keys()}")
+            if 'error' in data:
+                print(f"Error: {data['error']}")
+        elif isinstance(data, list):
+            print(f"Got list of {len(data)} messages.")
+        print(f"Data sample: {str(data)[:200]}")
     except Exception as e:
         print(f"Error fetching messages: {e}")
 
