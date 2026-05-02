@@ -33,6 +33,7 @@ services:
       - REDIS_ENABLED=false
       - WEBHOOK_GLOBAL_ENABLED=true
       - WEBHOOK_GLOBAL_URL=http://whatsapp-agent:8080/webhooks/whatsapp
+      - WEBHOOK_GLOBAL_WEBHOOK_BY_EVENTS=false
       - WEBHOOK_EVENTS_ERRORS=true
       - WEBHOOK_EVENTS_MESSAGES_UPSERT=true
     ports:
