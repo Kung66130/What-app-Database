@@ -249,26 +249,34 @@ def ask_agent(question: str, group_name: str | None = None, sender: str | None =
 ตอบเป็นภาษาไทยที่สุภาพและกระชับ
 """
 
-    # 3. Call Ollama (cloud model — free, fast, no local GPU needed)
+    # 3. Call Google Gemini Flash API (Free, Fast, High Quality)
     try:
+        gemini_key = os.environ.get("GEMINI_API_KEY", "")
+        if not gemini_key:
+            raise ValueError("GEMINI_API_KEY not set")
+        
         req_data = json.dumps({
-            "model": "llama3.2:1b",
-            "prompt": prompt,
-            "stream": False
+            "contents": [{"parts": [{"text": prompt}]}]
         }).encode("utf-8")
         
+        # Using Gemini 2.0 Flash for best performance and free tier availability
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={gemini_key}"
+        
         req = urllib.request.Request(
-            "http://100.123.233.122:11434/api/generate",
+            url,
             data=req_data,
             headers={"Content-Type": "application/json"}
         )
         
-        with urllib.request.urlopen(req, timeout=60) as response:
+        with urllib.request.urlopen(req, timeout=30) as response:
             resp_json = json.loads(response.read().decode("utf-8"))
-            answer = resp_json.get("response", "ขออภัยครับ เกิดข้อผิดพลาดในการดึงคำตอบ")
+            if "candidates" in resp_json and resp_json["candidates"]:
+                answer = resp_json["candidates"][0]["content"]["parts"][0]["text"]
+            else:
+                answer = "ขออภัยครับ AI ไม่สามารถสร้างคำตอบได้ในขณะนี้"
     except Exception as e:
-        print(f"Ollama Error: {e}")
-        answer = f"ขออภัยครับ ไม่สามารถเชื่อมต่อกับ AI ได้ในขณะนี้ ({e})"
+        print(f"Gemini Error: {e}")
+        answer = f"ขออภัยครับ ไม่สามารถเชื่อมต่อกับ Gemini AI ได้ในขณะนี้ ({e})"
 
     # 4. Format Citations
     top_hits = hits[:3]
