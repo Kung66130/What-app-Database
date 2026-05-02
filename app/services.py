@@ -252,7 +252,7 @@ def ask_agent(question: str, group_name: str | None = None, sender: str | None =
     # 3. Call Ollama (cloud model — free, fast, no local GPU needed)
     try:
         req_data = json.dumps({
-            "model": "llama3.2:1b",
+            "model": "gemma4:31b-cloud",
             "prompt": prompt,
             "stream": False
         }).encode("utf-8")
