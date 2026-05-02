@@ -152,7 +152,7 @@ def import_export_content(group_name: str, file_name: str, content: str, source_
 def list_groups() -> list[dict[str, Any]]:
     conn = get_connection()
     try:
-        rows = conn.execute("SELECT DISTINCT group_name FROM import_batches").fetchall()
+        rows = conn.execute("SELECT DISTINCT group_name FROM groups").fetchall()
         return [{"name": r["group_name"]} for r in rows]
     finally:
         conn.close()
