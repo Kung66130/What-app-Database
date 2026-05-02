@@ -251,33 +251,47 @@ def ask_agent(question: str, group_name: str | None = None, sender: str | None =
 """
 
     # 3. Call Google Gemini Flash API (Free, Fast, High Quality)
-    try:
-        gemini_key = os.environ.get("GEMINI_API_KEY", "")
-        if not gemini_key:
-            raise ValueError("GEMINI_API_KEY not set")
-        
+    import time as _time
+    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+    answer = "ขออภัยครับ ไม่สามารถเชื่อมต่อกับ Gemini AI ได้ในขณะนี้"
+
+    if not gemini_key:
+        answer = "ขออภัยครับ ไม่ได้ตั้งค่า GEMINI_API_KEY"
+    else:
         req_data = json.dumps({
             "contents": [{"parts": [{"text": prompt}]}]
         }).encode("utf-8")
-        
-        # Using Gemini 2.0 Flash for best performance and free tier availability
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={gemini_key}"
-        
-        req = urllib.request.Request(
-            url,
-            data=req_data,
-            headers={"Content-Type": "application/json"}
-        )
-        
-        with urllib.request.urlopen(req, timeout=30) as response:
-            resp_json = json.loads(response.read().decode("utf-8"))
-            if "candidates" in resp_json and resp_json["candidates"]:
-                answer = resp_json["candidates"][0]["content"]["parts"][0]["text"]
-            else:
-                answer = "ขออภัยครับ AI ไม่สามารถสร้างคำตอบได้ในขณะนี้"
-    except Exception as e:
-        print(f"Gemini Error: {e}")
-        answer = f"ขออภัยครับ ไม่สามารถเชื่อมต่อกับ Gemini AI ได้ในขณะนี้ ({e})"
+
+        # Try models in order, with retry on 429
+        for model in ["gemini-2.0-flash", "gemini-1.5-flash"]:
+            success = False
+            for attempt in range(3):
+                try:
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={gemini_key}"
+                    req = urllib.request.Request(
+                        url, data=req_data,
+                        headers={"Content-Type": "application/json"}
+                    )
+                    with urllib.request.urlopen(req, timeout=30) as response:
+                        resp_json = json.loads(response.read().decode("utf-8"))
+                        if "candidates" in resp_json and resp_json["candidates"]:
+                            answer = resp_json["candidates"][0]["content"]["parts"][0]["text"]
+                        else:
+                            answer = "ขออภัยครับ AI ไม่สามารถสร้างคำตอบได้ในขณะนี้"
+                    success = True
+                    break
+                except urllib.error.HTTPError as e:
+                    print(f"Gemini {model} attempt {attempt+1}: HTTP {e.code}")
+                    if e.code == 429 and attempt < 2:
+                        _time.sleep(2 ** attempt)
+                    else:
+                        break
+                except Exception as e:
+                    print(f"Gemini {model} error: {e}")
+                    break
+            if success:
+                break
+
 
     # 4. Format Citations
     top_hits = hits[:3]
