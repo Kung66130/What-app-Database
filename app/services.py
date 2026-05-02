@@ -197,7 +197,7 @@ def search_messages(q: str | None = None, group_name: str | None = None, sender:
             params.append(q)
         
         if group_name:
-            conditions.append("batch_id IN (SELECT id FROM import_batches WHERE group_name = ?)")
+            conditions.append("group_id IN (SELECT id FROM groups WHERE group_name = ?)")
             params.append(group_name)
             
         if sender:
