@@ -9,37 +9,64 @@ db_path = os.getenv("DB_PATH", "data/whatsapp_agent.db")
 conn = sqlite3.connect(db_path)
 conn.row_factory = sqlite3.Row
 
-def fetch_messages():
+def fetch_messages_page(page, limit):
     req = urllib.request.Request(
         'http://evolution-api:8080/chat/findMessages/whatsapp-pi-new',
-        data=json.dumps({"page": 1, "limit": 100}).encode(),
+        data=json.dumps({"page": page, "limit": limit}).encode(),
         headers={'apikey': 'wa-agent-secret-key', 'Content-Type': 'application/json'}
     )
     with urllib.request.urlopen(req) as resp:
         return json.loads(resp.read().decode())
 
 def run():
-    print("Fetching messages from Evolution API...")
-    try:
-        data = fetch_messages()
-        if isinstance(data, dict) and 'messages' in data:
-            records = data['messages'].get('records', [])
-            print(f"Got {len(records)} messages. Importing...")
-            success = 0
-            for record in records:
-                # Wrap it to look like a webhook payload
-                payload = {
-                    "event": "messages.upsert",
-                    "data": record
-                }
-                res = handle_evolution_webhook(payload)
-                if res.get("status") == "success":
-                    success += 1
-            print(f"Successfully imported {success} messages out of {len(records)}.")
-        else:
-            print("No messages found in response.")
-    except Exception as e:
-        print(f"Error fetching messages: {e}")
+    print("Fetching messages from Evolution API for the past 2 months...")
+    import time
+    two_months_ago = time.time() - (60 * 24 * 60 * 60)
+    
+    page = 1
+    limit = 500
+    total_success = 0
+    total_processed = 0
+    keep_fetching = True
+    
+    while keep_fetching:
+        try:
+            print(f"Fetching page {page}...")
+            data = fetch_messages_page(page, limit)
+            
+            if isinstance(data, dict) and 'messages' in data:
+                records = data['messages'].get('records', [])
+                if not records:
+                    print("No more records found.")
+                    break
+                
+                print(f"Got {len(records)} messages on page {page}.")
+                for record in records:
+                    # Check timestamp
+                    msg_time = record.get("messageTimestamp", time.time())
+                    if msg_time < two_months_ago:
+                        print(f"Reached messages older than 2 months (Timestamp: {msg_time}). Stopping.")
+                        keep_fetching = False
+                        break
+                        
+                    payload = {
+                        "event": "messages.upsert",
+                        "data": record
+                    }
+                    res = handle_evolution_webhook(payload)
+                    total_processed += 1
+                    if res.get("status") == "success":
+                        total_success += 1
+                
+                page += 1
+            else:
+                print("Invalid response format.")
+                break
+        except Exception as e:
+            print(f"Error fetching page {page}: {e}")
+            break
+            
+    print(f"Import complete! Successfully imported {total_success} messages out of {total_processed} processed.")
 
 if __name__ == "__main__":
     run()
