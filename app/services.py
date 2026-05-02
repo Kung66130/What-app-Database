@@ -235,7 +235,7 @@ def ask_agent(question: str, group_name: str | None = None, sender: str | None =
             "citations": []
         }
 
-    # 2. Build Prompt for Ollama
+    # 2. Build Prompt for Gemini
     context_str = "\n".join([f"[{h['sent_at']}] {h['sender_name']}: {h['content_raw']}" for h in hits])
     
     prompt = f"""คุณคือ AI Assistant ที่เก่งกาจในการวิเคราะห์ข้อมูลแชท WhatsApp
@@ -249,10 +249,10 @@ def ask_agent(question: str, group_name: str | None = None, sender: str | None =
 ตอบเป็นภาษาไทยที่สุภาพและกระชับ
 """
 
-    # 3. Call Ollama
+    # 3. Call Ollama (cloud model — free, fast, no local GPU needed)
     try:
         req_data = json.dumps({
-            "model": "llama3.2:1b",
+            "model": "gemma4:31b-cloud",
             "prompt": prompt,
             "stream": False
         }).encode("utf-8")
@@ -263,7 +263,7 @@ def ask_agent(question: str, group_name: str | None = None, sender: str | None =
             headers={"Content-Type": "application/json"}
         )
         
-        with urllib.request.urlopen(req, timeout=30) as response:
+        with urllib.request.urlopen(req, timeout=60) as response:
             resp_json = json.loads(response.read().decode("utf-8"))
             answer = resp_json.get("response", "ขออภัยครับ เกิดข้อผิดพลาดในการดึงคำตอบ")
     except Exception as e:
