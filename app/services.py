@@ -281,7 +281,8 @@ def ask_agent(question: str, group_name: str | None = None, sender: str | None =
                     success = True
                     break
                 except urllib.error.HTTPError as e:
-                    print(f"Gemini {model} attempt {attempt+1}: HTTP {e.code}")
+                    error_body = e.read().decode("utf-8")
+                    print(f"Gemini {model} attempt {attempt+1}: HTTP {e.code} - Body: {error_body}")
                     if e.code == 429 and attempt < 2:
                         _time.sleep(2 ** attempt)
                     else:
