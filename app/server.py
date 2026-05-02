@@ -64,6 +64,31 @@ class ApiHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         print(f"DEBUG: Incoming POST request to {path}")
+
+        # Slack sends form-urlencoded data, NOT JSON — handle it first
+        if path == "/slack/command":
+            content_length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(content_length)
+            
+            timestamp = self.headers.get("X-Slack-Request-Timestamp", "")
+            signature = self.headers.get("X-Slack-Signature", "")
+            
+            if not verify_slack_signature(timestamp, signature, raw_body):
+                print(f"Unauthorized Slack request from {self.client_address}")
+                self._write_json({"error": "Unauthorized"}, status=HTTPStatus.UNAUTHORIZED)
+                return
+            
+            params = parse_qs(raw_body.decode("utf-8"))
+            text = params.get("text", [""])[0]
+            channel_id = params.get("channel_id", [""])[0]
+            response_url = params.get("response_url", [None])[0]
+            
+            print(f"Slack command received: {text} in {channel_id}")
+            result = handle_slack_command(text, channel_id=channel_id, response_url=response_url)
+            self._write_json(result)
+            return
+
+        # All other POST endpoints expect JSON
         body = self._read_json_body()
         if body is None:
             print("DEBUG: Failed to read JSON body")
@@ -97,28 +122,6 @@ class ApiHandler(BaseHTTPRequestHandler):
                 date_to=body.get("date_to"),
                 limit=int(body.get("limit", 8)),
             )
-            self._write_json(result)
-            return
-
-        if path == "/slack/command":
-            content_length = int(self.headers.get("Content-Length", "0"))
-            raw_body = self.rfile.read(content_length)
-            
-            timestamp = self.headers.get("X-Slack-Request-Timestamp", "")
-            signature = self.headers.get("X-Slack-Signature", "")
-            
-            if not verify_slack_signature(timestamp, signature, raw_body):
-                print(f"Unauthorized Slack request from {self.client_address}")
-                self._write_json({"error": "Unauthorized"}, status=HTTPStatus.UNAUTHORIZED)
-                return
-            
-            params = parse_qs(raw_body.decode("utf-8"))
-            text = params.get("text", [""])[0]
-            channel_id = params.get("channel_id", [""])[0]
-            response_url = params.get("response_url", [None])[0]
-            
-            print(f"Slack command received: {text} in {channel_id}")
-            result = handle_slack_command(text, channel_id=channel_id, response_url=response_url)
             self._write_json(result)
             return
 
