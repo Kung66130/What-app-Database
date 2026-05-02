@@ -73,19 +73,25 @@ class ApiHandler(BaseHTTPRequestHandler):
             timestamp = self.headers.get("X-Slack-Request-Timestamp", "")
             signature = self.headers.get("X-Slack-Signature", "")
             
-            if not verify_slack_signature(timestamp, signature, raw_body):
-                print(f"Unauthorized Slack request from {self.client_address}")
-                self._write_json({"error": "Unauthorized"}, status=HTTPStatus.UNAUTHORIZED)
-                return
-            
-            params = parse_qs(raw_body.decode("utf-8"))
-            text = params.get("text", [""])[0]
-            channel_id = params.get("channel_id", [""])[0]
-            response_url = params.get("response_url", [None])[0]
-            
-            print(f"Slack command received: {text} in {channel_id}")
-            result = handle_slack_command(text, channel_id=channel_id, response_url=response_url)
-            self._write_json(result)
+            # 1. Acknowledge immediately to avoid timeout
+            self._write_json({"response_type": "ephemeral", "text": "⏳ กำลังประมวลผลคำสั่งของคุณ..."}, status=HTTPStatus.OK)
+
+            # 2. Process in background
+            import threading
+            def bg_work(body, ts, sig):
+                if not verify_slack_signature(ts, sig, body):
+                    print(f"Unauthorized Slack request")
+                    return
+                
+                params = parse_qs(body.decode("utf-8"))
+                text = params.get("text", [""])[0]
+                channel_id = params.get("channel_id", [""])[0]
+                response_url = params.get("response_url", [None])[0]
+                
+                print(f"Slack command (BG): {text} in {channel_id}")
+                handle_slack_command(text, channel_id=channel_id, response_url=response_url)
+
+            threading.Thread(target=bg_work, args=(raw_body, timestamp, signature)).start()
             return
 
         # All other POST endpoints expect JSON
