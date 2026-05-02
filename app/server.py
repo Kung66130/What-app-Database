@@ -122,9 +122,9 @@ class ApiHandler(BaseHTTPRequestHandler):
             self._write_json(result)
             return
 
-        if path == "/webhooks/whatsapp":
+        if path.startswith("/webhooks/whatsapp"):
             # This endpoint is for Evolution API
-            print(f"DEBUG: Received WhatsApp Webhook: {json.dumps(body)[:100]}...")
+            print(f"DEBUG: Received WhatsApp Webhook on {path}: {json.dumps(body)[:100]}...")
             result = handle_evolution_webhook(body)
             self._write_json(result)
             return
