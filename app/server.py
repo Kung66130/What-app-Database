@@ -63,8 +63,10 @@ class ApiHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = parsed.path
+        print(f"DEBUG: Incoming POST request to {path}")
         body = self._read_json_body()
         if body is None:
+            print("DEBUG: Failed to read JSON body")
             return
 
         if path == "/imports/whatsapp":
@@ -122,7 +124,7 @@ class ApiHandler(BaseHTTPRequestHandler):
 
         if path == "/webhooks/whatsapp":
             # This endpoint is for Evolution API
-            # Note: You might want to add a secret key check here for security
+            print(f"DEBUG: Received WhatsApp Webhook: {json.dumps(body)[:100]}...")
             result = handle_evolution_webhook(body)
             self._write_json(result)
             return
