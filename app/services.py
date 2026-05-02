@@ -60,32 +60,30 @@ def handle_evolution_webhook(payload: dict[str, Any]) -> dict[str, Any]:
     # 3. Store in DB
     conn = get_connection()
     try:
-        # Ensure group exists in import_batches (as a virtual batch for live sync)
-        cursor = conn.execute(
-            "SELECT id FROM import_batches WHERE group_name = ? AND source_file = 'LIVE_SYNC' LIMIT 1",
-            (group_name,)
-        )
-        row = cursor.fetchone()
-        if row:
-            batch_id = row["id"]
-        else:
-            cursor = conn.execute(
-                "INSERT INTO import_batches (group_name, source_file) VALUES (?, ?)",
-                (group_name, "LIVE_SYNC")
-            )
-            batch_id = cursor.lastrowid
+        now_iso = datetime.now().isoformat()
+        
+        # Upsert Group
+        conn.execute("INSERT OR IGNORE INTO groups (group_name, created_at) VALUES (?, ?)", (group_name, now_iso))
+        group_id = conn.execute("SELECT id FROM groups WHERE group_name = ?", (group_name,)).fetchone()["id"]
 
         # Upsert User
-        conn.execute("INSERT OR IGNORE INTO users (name) VALUES (?)", (sender_name,))
+        conn.execute("INSERT OR IGNORE INTO users (display_name, normalized_name, created_at) VALUES (?, ?, ?)", (sender_name, sender_name.lower(), now_iso))
+        sender_id = conn.execute("SELECT id FROM users WHERE normalized_name = ?", (sender_name.lower(),)).fetchone()["id"]
+
+        # Ensure Batch
+        conn.execute("INSERT OR IGNORE INTO import_batches (group_id, file_name, file_sha1, imported_at, total_lines, parsed_messages, new_messages, duplicate_messages) VALUES (?, 'LIVE_SYNC', 'LIVE_SYNC', ?, 0, 0, 0, 0)", (group_id, now_iso))
+        batch_id = conn.execute("SELECT id FROM import_batches WHERE group_id = ? AND file_name = 'LIVE_SYNC' LIMIT 1", (group_id,)).fetchone()["id"]
 
         # Insert Message
         timestamp = datetime.fromtimestamp(data.get("messageTimestamp", datetime.now().timestamp())).isoformat()
+        source_hash = key.get("id", str(datetime.now().timestamp()))
+        
         conn.execute(
             """
-            INSERT INTO messages (batch_id, sent_at, sender_name, content_raw)
-            VALUES (?, ?, ?, ?)
+            INSERT OR IGNORE INTO messages (group_id, sender_id, batch_id, sent_at, message_type, content_raw, content_normalized, source_hash, source_line_start, source_line_end, created_at)
+            VALUES (?, ?, ?, ?, 'text', ?, ?, ?, 0, 0, ?)
             """,
-            (batch_id, timestamp, sender_name, content)
+            (group_id, sender_id, batch_id, timestamp, content, content.lower(), source_hash, now_iso)
         )
         conn.commit()
         return {"status": "success", "message_id": key.get("id")}
