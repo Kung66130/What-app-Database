@@ -263,7 +263,7 @@ def ask_agent(question: str, group_name: str | None = None, sender: str | None =
         }).encode("utf-8")
 
         # Try models in order, with retry on 429
-        for model in ["gemini-1.5-flash-latest", "gemini-1.5-flash-8b-latest", "gemini-2.0-flash-exp"]:
+        for model in ["gemini-1.5-flash", "gemini-1.5-flash-8b"]:
             success = False
             for attempt in range(3):
                 try:
