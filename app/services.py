@@ -379,7 +379,6 @@ def _derive_search_query(question: str) -> str:
         "ส่งของ": "shipment",
         "ช้า": "delay",
         "ล่าช้า": "delay",
-        "สรุป": "summary",
         "ลูกค้า": "client",
         "สต็อก": "stock",
     }
@@ -395,4 +394,4 @@ def _derive_search_query(question: str) -> str:
         if token not in deduped:
             deduped.append(token)
 
-    return " ".join(deduped) if deduped else question
+    return " OR ".join(deduped) if deduped else ""
