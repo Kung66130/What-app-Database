@@ -13,6 +13,7 @@ DEFAULT_DB_PATH = DEFAULT_DATA_DIR / "whatsapp_agent.db"
 class Settings:
     app_name: str = "WhatsApp Agent MVP"
     db_path: Path = Path(os.getenv("WA_AGENT_DB_PATH", str(DEFAULT_DB_PATH)))
+    data_dir: Path = DEFAULT_DATA_DIR
     host: str = os.getenv("WA_AGENT_HOST", "127.0.0.1")
     port: int = int(os.getenv("WA_AGENT_PORT", "8080"))
     timezone: str = os.getenv("WA_AGENT_TIMEZONE", "Asia/Bangkok")

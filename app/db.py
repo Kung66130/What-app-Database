@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS messages (
     content_raw TEXT NOT NULL,
     content_normalized TEXT NOT NULL,
     content_th TEXT,
+    media_path TEXT,
     source_hash TEXT NOT NULL UNIQUE,
     source_line_start INTEGER NOT NULL,
     source_line_end INTEGER NOT NULL,

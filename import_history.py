@@ -21,15 +21,12 @@ def fetch_messages_page(page, limit):
 def run():
     print("Fetching messages from Evolution API for the past 2 months...")
     import time
-    two_months_ago = time.time() - (60 * 24 * 60 * 60)
-    
     page = 1
     limit = 500
     total_success = 0
     total_processed = 0
-    keep_fetching = True
     
-    while keep_fetching:
+    while True:
         try:
             print(f"Fetching page {page}...")
             data = fetch_messages_page(page, limit)
@@ -42,13 +39,6 @@ def run():
                 
                 print(f"Got {len(records)} messages on page {page}.")
                 for record in records:
-                    # Check timestamp
-                    msg_time = record.get("messageTimestamp", time.time())
-                    if msg_time < two_months_ago:
-                        print(f"Reached messages older than 2 months (Timestamp: {msg_time}). Stopping.")
-                        keep_fetching = False
-                        break
-                        
                     payload = {
                         "event": "messages.upsert",
                         "data": record

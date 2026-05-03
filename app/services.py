@@ -14,6 +14,8 @@ import urllib.error
 import hmac
 import hashlib
 import threading
+import base64
+import time
 
 from .config import settings
 from .db import get_connection, init_db, utc_now_iso
@@ -58,7 +60,31 @@ def handle_evolution_webhook(payload: dict[str, Any]) -> dict[str, Any]:
         # For now, let's use the JID as a placeholder or check if group metadata is present
         group_name = data.get("groupName") or remote_jid.split("@")[0]
 
-    # 3. Store in DB
+    # 3. Handle Media (Images)
+    media_path = None
+    if "imageMessage" in message:
+        base64_data = data.get("base64")
+        if base64_data:
+            try:
+                # Ensure media directory exists
+                media_dir = Path(settings.data_dir) / "media"
+                media_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Generate filename
+                file_ext = "jpg" # Default for imageMessage
+                filename = f"{key.get('id')}_{int(time.time())}.{file_ext}"
+                full_path = media_dir / filename
+                
+                # Save file
+                with open(full_path, "wb") as f:
+                    f.write(base64.b64decode(base64_data))
+                
+                media_path = f"media/{filename}"
+                print(f"DEBUG: Saved image to {media_path}")
+            except Exception as e:
+                print(f"DEBUG: Failed to save image: {e}")
+
+    # 4. Store in DB
     conn = get_connection()
     try:
         now_iso = datetime.now().isoformat()
@@ -81,10 +107,10 @@ def handle_evolution_webhook(payload: dict[str, Any]) -> dict[str, Any]:
         
         conn.execute(
             """
-            INSERT OR IGNORE INTO messages (group_id, sender_id, batch_id, sent_at, message_type, content_raw, content_normalized, source_hash, source_line_start, source_line_end, created_at)
-            VALUES (?, ?, ?, ?, 'text', ?, ?, ?, 0, 0, ?)
+            INSERT OR IGNORE INTO messages (group_id, sender_id, batch_id, sent_at, message_type, content_raw, content_normalized, media_path, source_hash, source_line_start, source_line_end, created_at)
+            VALUES (?, ?, ?, ?, 'text', ?, ?, ?, ?, 0, 0, ?)
             """,
-            (group_id, sender_id, batch_id, timestamp, content, content.lower(), source_hash, now_iso)
+            (group_id, sender_id, batch_id, timestamp, content, content.lower(), media_path, source_hash, now_iso)
         )
         conn.commit()
         return {"status": "success", "message_id": key.get("id")}
