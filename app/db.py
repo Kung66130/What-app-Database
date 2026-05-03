@@ -14,6 +14,7 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS groups (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     group_name TEXT NOT NULL UNIQUE,
+    remote_jid TEXT UNIQUE,
     description TEXT,
     timezone TEXT NOT NULL DEFAULT 'Asia/Bangkok',
     source_owner TEXT,

@@ -18,6 +18,7 @@ class Settings:
     port: int = int(os.getenv("WA_AGENT_PORT", "8080"))
     timezone: str = os.getenv("WA_AGENT_TIMEZONE", "Asia/Bangkok")
     slack_signing_secret: str = os.getenv("SLACK_SIGNING_SECRET", "")
+    slack_bot_token: str = os.getenv("SLACK_BOT_TOKEN", "")
     slack_allowed_channels: str = os.getenv("SLACK_ALLOWED_CHANNELS", "") # Comma separated IDs
 
 

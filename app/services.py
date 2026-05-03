@@ -90,7 +90,10 @@ def handle_evolution_webhook(payload: dict[str, Any]) -> dict[str, Any]:
         now_iso = datetime.now().isoformat()
         
         # Upsert Group
-        conn.execute("INSERT OR IGNORE INTO groups (group_name, created_at) VALUES (?, ?)", (group_name, now_iso))
+        conn.execute(
+            "INSERT INTO groups (group_name, remote_jid, created_at) VALUES (?, ?, ?) ON CONFLICT(group_name) DO UPDATE SET remote_jid=excluded.remote_jid",
+            (group_name, remote_jid, now_iso)
+        )
         group_id = conn.execute("SELECT id FROM groups WHERE group_name = ?", (group_name,)).fetchone()["id"]
 
         # Upsert User
@@ -113,9 +116,111 @@ def handle_evolution_webhook(payload: dict[str, Any]) -> dict[str, Any]:
             (group_id, sender_id, batch_id, timestamp, content, content.lower(), media_path, source_hash, now_iso)
         )
         conn.commit()
+
+        # --- Automated Translation and Slack Notification for "Wax Team Chat" ---
+        # Also handle "Wax Team Chat" (case-insensitive or exact)
+        if group_name.lower().strip() == "wax team chat" and content and not content.startswith("["):
+            def process_and_notify():
+                try:
+                    # 1. Translate using Gemini
+                    thai_text = translate_to_thai(content)
+                    
+                    # 2. Prepare Slack Message
+                    slack_msg = f"📩 *{sender_name}* in *{group_name}*:\n{content}\n\n*แปลไทย:* {thai_text}"
+                    
+                    # 3. Send to Slack (using the first allowed channel)
+                    target_channel = settings.slack_allowed_channels.split(",")[0].strip()
+                    if target_channel:
+                        send_to_slack(slack_msg, target_channel)
+                        print(f"DEBUG: Sent translated message to Slack {target_channel}")
+                except Exception as e:
+                    print(f"DEBUG: Translation/Slack Notification failed: {e}")
+
+            threading.Thread(target=process_and_notify).start()
+
         return {"status": "success", "message_id": key.get("id")}
     finally:
         conn.close()
+
+
+def send_to_whatsapp(text: str, remote_jid: str) -> bool:
+    """Sends a message to WhatsApp using Evolution API."""
+    # We need the API Key and Instance Name. 
+    # Based on import_history.py, instance is 'whatsapp-pi-new'
+    instance = "whatsapp-pi-new"
+    api_key = "wa-agent-secret-key"
+    base_url = "http://evolution-api:8080" # internal docker URL
+    
+    url = f"{base_url}/message/sendText/{instance}"
+    req_data = json.dumps({
+        "number": remote_jid,
+        "options": {"delay": 1200, "presence": "composing", "linkPreview": False},
+        "textMessage": {"text": text}
+    }).encode("utf-8")
+    
+    try:
+        req = urllib.request.Request(url, data=req_data, headers={
+            "Content-Type": "application/json",
+            "apikey": api_key
+        })
+        with urllib.request.urlopen(req, timeout=15) as response:
+            resp = json.loads(response.read().decode("utf-8"))
+            if resp.get("key"):
+                print(f"DEBUG: Successfully sent message to WhatsApp {remote_jid}")
+                return True
+            else:
+                print(f"DEBUG: Evolution API Error: {resp}")
+    except Exception as e:
+        print(f"DEBUG: Failed to send to WhatsApp: {e}")
+    return False
+
+
+def translate_to_thai(text: str) -> str:
+    """Uses Gemini API to translate text to Thai."""
+    if not settings.gemini_api_key:
+        return text
+        
+    prompt = f"Translate the following WhatsApp message to professional and natural Thai language. Only return the translated text:\n\n{text}"
+    
+    req_data = json.dumps({
+        "contents": [{"parts": [{"text": prompt}]}]
+    }).encode("utf-8")
+    
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={settings.gemini_api_key}"
+    try:
+        req = urllib.request.Request(url, data=req_data, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as response:
+            resp_json = json.loads(response.read().decode("utf-8"))
+            if "candidates" in resp_json and resp_json["candidates"]:
+                return resp_json["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except Exception as e:
+        print(f"Gemini Translation Error: {e}")
+    return text
+
+
+def send_to_slack(text: str, channel_id: str) -> None:
+    """Sends a message to Slack using the Bot Token."""
+    if not settings.slack_bot_token:
+        print("DEBUG: Missing SLACK_BOT_TOKEN")
+        return
+        
+    url = "https://slack.com/api/chat.postMessage"
+    req_data = json.dumps({
+        "channel": channel_id,
+        "text": text
+    }).encode("utf-8")
+    
+    try:
+        req = urllib.request.Request(url, data=req_data, headers={
+            "Content-Type": "application/json; charset=utf-8",
+            "Authorization": f"Bearer {settings.slack_bot_token}"
+        })
+        with urllib.request.urlopen(req, timeout=10) as response:
+            resp = json.loads(response.read().decode("utf-8"))
+            if not resp.get("ok"):
+                print(f"Slack API Error: {resp.get('error')}")
+    except Exception as e:
+        print(f"Slack Send Error: {e}")
 
 
 @dataclass

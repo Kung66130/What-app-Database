@@ -25,7 +25,7 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
-        path = parsed.path
+        path = parsed.path.rstrip("/") if parsed.path != "/" else "/"
         query = parse_qs(parsed.query)
 
         if path == "/health":
@@ -62,10 +62,10 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
-        path = parsed.path
+        path = parsed.path.rstrip("/") if parsed.path != "/" else "/"
         print(f"DEBUG: Incoming POST request to {path}")
 
-        # Slack sends form-urlencoded data, NOT JSON — handle it first
+        # Slack sends form-urlencoded data for commands, NOT JSON
         if path == "/slack/command":
             content_length = int(self.headers.get("Content-Length", "0"))
             raw_body = self.rfile.read(content_length)
@@ -93,6 +93,47 @@ class ApiHandler(BaseHTTPRequestHandler):
 
             threading.Thread(target=bg_work, args=(raw_body, timestamp, signature)).start()
             return
+
+        # --- Slack Events API ---
+        if path == "/slack/events":
+            body = self._read_json_body()
+            if not body: return
+            
+            # 1. URL Verification
+            if body.get("type") == "url_verification":
+                self._write_json({"challenge": body.get("challenge")})
+                return
+            
+            # 2. Event Callback
+            if body.get("type") == "event_callback":
+                event = body.get("event", {})
+                event_type = event.get("type")
+                
+                # Check if it's a message in a channel we care about
+                if event_type == "message" and not event.get("bot_id"):
+                    channel_id = event.get("channel")
+                    text = event.get("text", "")
+                    
+                    allowed_channels = [c.strip() for c in settings.slack_allowed_channels.split(",") if c.strip()]
+                    if channel_id in allowed_channels:
+                        print(f"DEBUG: Slack message from {channel_id}: {text}")
+                        
+                        # Forward to WhatsApp group "Wax Team Chat"
+                        def forward_to_wa():
+                            from .services import get_connection, send_to_whatsapp
+                            conn = get_connection()
+                            try:
+                                group = conn.execute("SELECT remote_jid FROM groups WHERE group_name = 'Wax Team Chat' LIMIT 1").fetchone()
+                                if group and group["remote_jid"]:
+                                    send_to_whatsapp(text, group["remote_jid"])
+                            finally:
+                                conn.close()
+                        
+                        import threading
+                        threading.Thread(target=forward_to_wa).start()
+
+                self._write_json({"status": "ok"})
+                return
 
         # All other POST endpoints expect JSON
         body = self._read_json_body()
