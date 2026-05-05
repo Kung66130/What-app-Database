@@ -107,4 +107,52 @@ def get_connection() -> sqlite3.Connection:
 def init_db() -> None:
     with get_connection() as conn:
         conn.executescript(SCHEMA_SQL)
+        _migrate_existing_schema(conn)
         conn.commit()
+
+
+def _migrate_existing_schema(conn: sqlite3.Connection) -> None:
+    _ensure_columns(
+        conn,
+        "groups",
+        {
+            "remote_jid": "TEXT",
+            "description": "TEXT",
+            "timezone": "TEXT NOT NULL DEFAULT 'Asia/Bangkok'",
+            "source_owner": "TEXT",
+            "created_at": "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00+00:00'",
+        },
+    )
+    _ensure_columns(
+        conn,
+        "users",
+        {
+            "phone_number": "TEXT",
+        },
+    )
+    _ensure_columns(
+        conn,
+        "import_batches",
+        {
+            "new_messages": "INTEGER NOT NULL DEFAULT 0",
+            "duplicate_messages": "INTEGER NOT NULL DEFAULT 0",
+        },
+    )
+    _ensure_columns(
+        conn,
+        "messages",
+        {
+            "content_th": "TEXT",
+            "media_path": "TEXT",
+        },
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_remote_jid ON groups(remote_jid) WHERE remote_jid IS NOT NULL"
+    )
+
+
+def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    for column_name, column_sql in columns.items():
+        if column_name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column_name} {column_sql}")
