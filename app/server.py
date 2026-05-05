@@ -18,6 +18,7 @@ from .services import (
     list_import_batches,
     list_users,
     search_messages,
+    system_status,
     verify_slack_signature,
 )
 
@@ -57,6 +58,10 @@ class ApiHandler(BaseHTTPRequestHandler):
 
         if path == "/db/status":
             self._write_json({"database": database_status()})
+            return
+
+        if path == "/system/status":
+            self._write_json({"system": system_status()})
             return
 
         if path == "/messages/search":
@@ -431,6 +436,28 @@ DASHBOARD_HTML = r"""<!doctype html>
       margin-bottom: 8px;
     }
     .metric span { color: var(--muted); }
+    .system-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+    }
+    .system-item {
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 11px;
+      background: #fff;
+      min-height: 72px;
+    }
+    .system-item strong {
+      display: block;
+      font-size: 17px;
+      margin-top: 3px;
+    }
+    .system-item span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 680;
+    }
     .list {
       display: grid;
       gap: 8px;
@@ -467,7 +494,7 @@ DASHBOARD_HTML = r"""<!doctype html>
     @media (max-width: 820px) {
       header, .toolbar, .fields { grid-template-columns: 1fr; align-items: stretch; }
       header { display: grid; padding: 16px; }
-      .grid, .summary { grid-template-columns: 1fr; }
+      .grid, .summary, .system-grid { grid-template-columns: 1fr; }
       main { width: min(100vw - 20px, 1180px); margin-top: 12px; }
     }
   </style>
@@ -496,6 +523,19 @@ DASHBOARD_HTML = r"""<!doctype html>
         <div class="metric"><strong id="messageCount">-</strong><span>latest search hits</span></div>
       </div>
       <p id="dbStatus" class="muted" style="margin:12px 0 0">Database: checking</p>
+    </section>
+
+    <section>
+      <h2>Pi Status</h2>
+      <div class="system-grid">
+        <div class="system-item"><span>Uptime</span><strong id="uptime">-</strong></div>
+        <div class="system-item"><span>CPU load</span><strong id="loadAverage">-</strong></div>
+        <div class="system-item"><span>CPU temp</span><strong id="temperature">-</strong></div>
+        <div class="system-item"><span>Memory</span><strong id="memory">-</strong></div>
+        <div class="system-item"><span>Data disk</span><strong id="dataDisk">-</strong></div>
+        <div class="system-item"><span>Evolution API</span><strong id="evolutionStatus">-</strong></div>
+      </div>
+      <p id="systemDetail" class="muted" style="margin:12px 0 0">System: checking</p>
     </section>
 
     <div class="grid">
@@ -547,6 +587,13 @@ DASHBOARD_HTML = r"""<!doctype html>
       importCount: document.getElementById('importCount'),
       messageCount: document.getElementById('messageCount'),
       dbStatus: document.getElementById('dbStatus'),
+      uptime: document.getElementById('uptime'),
+      loadAverage: document.getElementById('loadAverage'),
+      temperature: document.getElementById('temperature'),
+      memory: document.getElementById('memory'),
+      dataDisk: document.getElementById('dataDisk'),
+      evolutionStatus: document.getElementById('evolutionStatus'),
+      systemDetail: document.getElementById('systemDetail'),
       messages: document.getElementById('messages'),
       imports: document.getElementById('imports'),
       users: document.getElementById('users'),
@@ -599,10 +646,11 @@ DASHBOARD_HTML = r"""<!doctype html>
     async function refreshAll() {
       await checkHealth();
       try {
-        const [groups, users, imports] = await Promise.all([
+        const [groups, users, imports, system] = await Promise.all([
           api('/groups'),
           api('/users?limit=20'),
           api('/imports?limit=20'),
+          api('/system/status'),
         ]);
         const db = await api('/db/status');
         els.groupCount.textContent = groups.groups.length;
@@ -610,12 +658,37 @@ DASHBOARD_HTML = r"""<!doctype html>
         els.importCount.textContent = imports.imports.length;
         const counts = db.database.counts || {};
         els.dbStatus.textContent = `Database: ${db.database.db_path} | messages ${counts.messages || 0}`;
+        renderSystem(system.system);
         els.users.innerHTML = users.users.map(u => row(u.display_name, `${u.msg_count} messages`, u.normalized_name)).join('') || '<p class="muted">No users</p>';
         els.imports.innerHTML = imports.imports.map(i => row(i.group_name, i.imported_at, `${i.file_name} | new ${i.new_messages} | duplicate ${i.duplicate_messages}`)).join('') || '<p class="muted">No imports</p>';
       } catch (err) {
         els.imports.innerHTML = `<p class="error">${escapeHtml(err.message)}</p>`;
         els.users.innerHTML = `<p class="error">${escapeHtml(err.message)}</p>`;
       }
+    }
+
+    function renderSystem(system) {
+      const memory = system.memory;
+      const dataDisk = system.disk && system.disk.data_dir;
+      const load = system.load_average || [];
+      els.uptime.textContent = formatDuration(system.uptime_seconds);
+      els.loadAverage.textContent = load.length ? load.map(n => Number(n).toFixed(2)).join(' / ') : '-';
+      els.temperature.textContent = system.temperature_c == null ? 'n/a' : `${system.temperature_c} C`;
+      els.memory.textContent = memory ? `${memory.used_percent}% used` : 'n/a';
+      els.dataDisk.textContent = dataDisk ? `${dataDisk.used_percent}% used` : 'n/a';
+      els.evolutionStatus.textContent = system.integrations && system.integrations.evolution_reachable ? 'reachable' : 'not reachable';
+      els.systemDetail.textContent = `Host: ${system.hostname} | Python ${system.python_version} | data ${system.app.data_dir}`;
+    }
+
+    function formatDuration(seconds) {
+      if (seconds == null) return 'n/a';
+      const value = Number(seconds);
+      const days = Math.floor(value / 86400);
+      const hours = Math.floor((value % 86400) / 3600);
+      const minutes = Math.floor((value % 3600) / 60);
+      if (days > 0) return `${days}d ${hours}h`;
+      if (hours > 0) return `${hours}h ${minutes}m`;
+      return `${minutes}m`;
     }
 
     async function runSearch() {

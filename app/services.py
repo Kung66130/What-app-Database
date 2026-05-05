@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import os
+import platform
+import shutil
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
@@ -806,6 +808,114 @@ def database_status() -> dict[str, Any]:
         }
     finally:
         conn.close()
+
+
+def system_status() -> dict[str, Any]:
+    load_average = os.getloadavg() if hasattr(os, "getloadavg") else None
+    return {
+        "status": "ok",
+        "hostname": platform.node(),
+        "platform": platform.platform(),
+        "python_version": platform.python_version(),
+        "uptime_seconds": _read_uptime_seconds(),
+        "load_average": list(load_average) if load_average else None,
+        "memory": _read_memory_status(),
+        "disk": {
+            "data_dir": _disk_usage(settings.data_dir),
+            "root": _disk_usage(Path("/")),
+        },
+        "temperature_c": _read_temperature_c(),
+        "process": {
+            "pid": os.getpid(),
+            "cwd": os.getcwd(),
+        },
+        "app": {
+            "host": settings.host,
+            "port": settings.port,
+            "data_dir": str(settings.data_dir),
+            "db_path": str(settings.db_path),
+        },
+        "integrations": {
+            "gemini_configured": bool(settings.gemini_api_key),
+            "slack_bot_configured": bool(settings.slack_bot_token),
+            "slack_signing_configured": bool(settings.slack_signing_secret),
+            "evolution_configured": bool(settings.evolution_api_key),
+            "evolution_base_url": settings.evolution_base_url,
+            "evolution_reachable": _http_reachable(settings.evolution_base_url),
+        },
+    }
+
+
+def _read_uptime_seconds() -> float | None:
+    try:
+        return float(Path("/proc/uptime").read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _read_memory_status() -> dict[str, int | float] | None:
+    try:
+        values: dict[str, int] = {}
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if ":" not in line:
+                continue
+            key, raw_value = line.split(":", 1)
+            parts = raw_value.strip().split()
+            if parts:
+                values[key] = int(parts[0]) * 1024
+
+        total = values.get("MemTotal")
+        available = values.get("MemAvailable")
+        if not total or available is None:
+            return None
+
+        used = total - available
+        return {
+            "total_bytes": total,
+            "available_bytes": available,
+            "used_bytes": used,
+            "used_percent": round((used / total) * 100, 1),
+        }
+    except (OSError, ValueError):
+        return None
+
+
+def _disk_usage(path: Path) -> dict[str, int | float | str] | None:
+    try:
+        usage = shutil.disk_usage(path)
+        return {
+            "path": str(path),
+            "total_bytes": usage.total,
+            "used_bytes": usage.used,
+            "free_bytes": usage.free,
+            "used_percent": round((usage.used / usage.total) * 100, 1) if usage.total else 0,
+        }
+    except OSError:
+        return None
+
+
+def _read_temperature_c() -> float | None:
+    for path in Path("/sys/class/thermal").glob("thermal_zone*/temp"):
+        try:
+            raw = path.read_text().strip()
+            if raw:
+                return round(float(raw) / 1000, 1)
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def _http_reachable(url: str) -> bool:
+    if not url:
+        return False
+    try:
+        req = urllib.request.Request(url.rstrip("/"), method="GET")
+        with urllib.request.urlopen(req, timeout=2):
+            return True
+    except urllib.error.HTTPError:
+        return True
+    except Exception:
+        return False
 
 
 def _derive_search_query(question: str) -> str:
