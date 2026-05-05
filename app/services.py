@@ -969,9 +969,13 @@ def _format_docker_ports(ports: list[dict[str, Any]]) -> list[str]:
         public_port = port.get("PublicPort")
         port_type = port.get("Type", "tcp")
         if public_port:
-            formatted.append(f"{public_port}->{private_port}/{port_type}")
+            label = f"{public_port}->{private_port}/{port_type}"
         elif private_port:
-            formatted.append(f"{private_port}/{port_type}")
+            label = f"{private_port}/{port_type}"
+        else:
+            continue
+        if label not in formatted:
+            formatted.append(label)
     return formatted
 
 
