@@ -822,6 +822,8 @@ def run_database_maintenance(action: str) -> dict[str, Any]:
         return _cleanup_empty_live_batches()
     if clean_action == "vacuum":
         return _vacuum_database()
+    if clean_action == "sync_evolution_groups":
+        return _sync_evolution_groups()
     raise ValueError(f"Unsupported maintenance action: {action}")
 
 
@@ -913,6 +915,96 @@ def _vacuum_database() -> dict[str, Any]:
         "after_size_bytes": after_size,
         "saved_bytes": max(before_size - after_size, 0),
     }
+
+
+def _sync_evolution_groups() -> dict[str, Any]:
+    if not settings.evolution_api_key:
+        raise RuntimeError("EVOLUTION_API_KEY is not configured")
+
+    groups = _fetch_evolution_groups()
+    conn = get_connection()
+    now_iso = utc_now_iso()
+    stats = {
+        "action": "sync_evolution_groups",
+        "remote_groups": len(groups),
+        "updated": 0,
+        "renamed": 0,
+        "merged": 0,
+        "inserted": 0,
+    }
+
+    try:
+        for group in groups:
+            remote_jid = str(group.get("id") or "").strip()
+            subject = str(group.get("subject") or "").strip()
+            if not remote_jid.endswith("@g.us") or not subject:
+                continue
+
+            jid_key = remote_jid.split("@", 1)[0]
+            numeric_row = conn.execute(
+                "SELECT id, group_name FROM groups WHERE remote_jid = ? OR group_name = ? LIMIT 1",
+                (remote_jid, jid_key),
+            ).fetchone()
+            subject_row = conn.execute(
+                "SELECT id, group_name FROM groups WHERE group_name = ? LIMIT 1",
+                (subject,),
+            ).fetchone()
+
+            target_row = numeric_row or subject_row
+            if numeric_row and subject_row and int(numeric_row["id"]) != int(subject_row["id"]):
+                target_id = int(numeric_row["id"])
+                source_id = int(subject_row["id"])
+                conn.execute("UPDATE messages SET group_id = ? WHERE group_id = ?", (target_id, source_id))
+                conn.execute("UPDATE import_batches SET group_id = ? WHERE group_id = ?", (target_id, source_id))
+                conn.execute("DELETE FROM groups WHERE id = ?", (source_id,))
+                target_row = numeric_row
+                stats["merged"] += 1
+
+            if target_row:
+                target_id = int(target_row["id"])
+                desired_name = _unique_group_name(conn, subject, target_id, jid_key)
+                if target_row["group_name"] != desired_name:
+                    conn.execute("UPDATE groups SET group_name = ? WHERE id = ?", (desired_name, target_id))
+                    stats["renamed"] += 1
+                conn.execute("UPDATE groups SET remote_jid = ? WHERE id = ?", (remote_jid, target_id))
+                stats["updated"] += 1
+            else:
+                group_name = _unique_group_name(conn, subject, None, jid_key)
+                conn.execute(
+                    """
+                    INSERT INTO groups (group_name, remote_jid, created_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (group_name, remote_jid, now_iso),
+                )
+                stats["inserted"] += 1
+
+        conn.commit()
+        return stats
+    finally:
+        conn.close()
+
+
+def _fetch_evolution_groups() -> list[dict[str, Any]]:
+    url = (
+        f"{settings.evolution_base_url.rstrip('/')}"
+        f"/group/fetchAllGroups/{urllib.parse.quote(settings.evolution_instance)}?getParticipants=false"
+    )
+    req = urllib.request.Request(url, headers={"apikey": settings.evolution_api_key})
+    with urllib.request.urlopen(req, timeout=20) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+
+    raise RuntimeError(f"Unexpected Evolution groups response: {str(payload)[:200]}")
+
+
+def _unique_group_name(conn, desired_name: str, current_id: int | None, jid_key: str) -> str:
+    row = conn.execute("SELECT id FROM groups WHERE group_name = ? LIMIT 1", (desired_name,)).fetchone()
+    if not row or (current_id is not None and int(row["id"]) == current_id):
+        return desired_name
+    return f"{desired_name} ({jid_key[-6:]})"
 
 
 def system_status() -> dict[str, Any]:

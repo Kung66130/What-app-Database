@@ -633,6 +633,7 @@ DASHBOARD_HTML = r"""<!doctype html>
       <p id="dbStatus" class="muted" style="margin:12px 0 0">Database: checking</p>
       <div class="service-actions" style="margin-top:12px">
         <button class="secondary" type="button" data-db-action="backup">Backup DB</button>
+        <button class="secondary" type="button" data-db-action="sync_evolution_groups">Sync Group Names</button>
         <button class="secondary" type="button" data-db-action="cleanup_empty_live_batches">Cleanup Empty Imports</button>
         <button class="secondary" type="button" data-db-action="vacuum">Vacuum</button>
       </div>
@@ -882,6 +883,7 @@ DASHBOARD_HTML = r"""<!doctype html>
     async function runDbMaintenance(action) {
       const labels = {
         backup: 'Backup DB',
+        sync_evolution_groups: 'Sync Group Names',
         cleanup_empty_live_batches: 'Cleanup Empty Imports',
         vacuum: 'Vacuum DB',
       };
@@ -907,6 +909,9 @@ DASHBOARD_HTML = r"""<!doctype html>
       }
       if (result.action === 'cleanup_empty_live_batches') {
         return `deleted ${result.deleted_rows} empty imports (${result.before_batches} -> ${result.after_batches})`;
+      }
+      if (result.action === 'sync_evolution_groups') {
+        return `synced ${result.remote_groups} groups, updated ${result.updated}, renamed ${result.renamed}, merged ${result.merged}, inserted ${result.inserted}`;
       }
       if (result.action === 'vacuum') {
         return `vacuum saved ${formatBytes(result.saved_bytes)} (${formatBytes(result.before_size_bytes)} -> ${formatBytes(result.after_size_bytes)})`;
