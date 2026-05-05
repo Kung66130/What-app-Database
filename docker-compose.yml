@@ -10,6 +10,7 @@ services:
       - WA_AGENT_HOST=0.0.0.0
       - WA_AGENT_PORT=8080
       - WA_AGENT_DATA_DIR=/app/data
+      - EVOLUTION_BASE_URL=http://evolution-api:8080
     env_file:
       - .env
     ports:
@@ -25,20 +26,22 @@ services:
     container_name: evolution-api
     image: evoapicloud/evolution-api:latest
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
-      - SERVER_URL=http://100.123.233.122:8081
+      - SERVER_URL=${EVOLUTION_SERVER_URL:-http://127.0.0.1:8081}
       - AUTHENTICATION_ENABLED=true
       - AUTHENTICATION_TYPE=apikey
-      - AUTHENTICATION_API_KEY=wa-agent-secret-key
+      - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY}
       - DATABASE_ENABLED=true
       - DATABASE_PROVIDER=postgresql
-      - DATABASE_CONNECTION_URI=postgresql://root:wa-agent-pass@postgres-wa:5432/evolution?schema=public
+      - DATABASE_CONNECTION_URI=postgresql://${POSTGRES_USER:-root}:${POSTGRES_PASSWORD:-wa-agent-pass}@postgres-wa:5432/${POSTGRES_DB:-evolution}?schema=public
       - REDIS_ENABLED=true
       - REDIS_URI=redis://redis-wa:6379
       - CACHE_REDIS_ENABLED=true
       - CACHE_REDIS_URI=redis://redis-wa:6379
       - WEBHOOK_GLOBAL_ENABLED=true
-      - WEBHOOK_GLOBAL_URL=http://whatsapp-agent:8080/webhooks/whatsapp
+      - WEBHOOK_GLOBAL_URL=http://whatsapp-agent:8080/webhooks/whatsapp?secret=${WA_AGENT_WEBHOOK_SECRET}
       - WEBHOOK_GLOBAL_WEBHOOK_BY_EVENTS=false
       - WEBHOOK_EVENTS_ERRORS=true
       - WEBHOOK_EVENTS_MESSAGES_UPSERT=true
@@ -61,10 +64,12 @@ services:
     container_name: postgres-wa
     image: postgres:15-alpine
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
-      - POSTGRES_USER=root
-      - POSTGRES_PASSWORD=wa-agent-pass
-      - POSTGRES_DB=evolution
+      - POSTGRES_USER=${POSTGRES_USER:-root}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-wa-agent-pass}
+      - POSTGRES_DB=${POSTGRES_DB:-evolution}
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
     networks:
