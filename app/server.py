@@ -19,6 +19,7 @@ from .services import (
     list_groups,
     list_import_batches,
     list_users,
+    run_database_maintenance,
     search_messages,
     restart_docker_container,
     system_status,
@@ -227,6 +228,16 @@ class ApiHandler(BaseHTTPRequestHandler):
 
         if path == "/debug/state":
             self._write_json(export_state())
+            return
+
+        if path == "/db/maintenance":
+            action = str(body.get("action", ""))
+            try:
+                self._write_json({"maintenance": run_database_maintenance(action)})
+            except ValueError as exc:
+                self._write_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            except Exception as exc:
+                self._write_json({"error": str(exc)}, status=HTTPStatus.BAD_GATEWAY)
             return
 
         if path == "/docker/restart":
@@ -620,6 +631,12 @@ DASHBOARD_HTML = r"""<!doctype html>
         <div class="metric"><strong id="messageCount">-</strong><span>messages</span></div>
       </div>
       <p id="dbStatus" class="muted" style="margin:12px 0 0">Database: checking</p>
+      <div class="service-actions" style="margin-top:12px">
+        <button class="secondary" type="button" data-db-action="backup">Backup DB</button>
+        <button class="secondary" type="button" data-db-action="cleanup_empty_live_batches">Cleanup Empty Imports</button>
+        <button class="secondary" type="button" data-db-action="vacuum">Vacuum</button>
+      </div>
+      <p id="dbMaintenance" class="muted" style="margin:10px 0 0">Maintenance: no action yet</p>
     </section>
 
     <section>
@@ -701,6 +718,7 @@ DASHBOARD_HTML = r"""<!doctype html>
       dockerServices: document.getElementById('dockerServices'),
       dockerLogTitle: document.getElementById('dockerLogTitle'),
       dockerLogs: document.getElementById('dockerLogs'),
+      dbMaintenance: document.getElementById('dbMaintenance'),
       messages: document.getElementById('messages'),
       imports: document.getElementById('imports'),
       users: document.getElementById('users'),
@@ -719,6 +737,9 @@ DASHBOARD_HTML = r"""<!doctype html>
     document.getElementById('runSearch').addEventListener('click', runSearch);
     document.getElementById('runAsk').addEventListener('click', runAsk);
     els.dockerServices.addEventListener('click', handleDockerAction);
+    document.querySelectorAll('[data-db-action]').forEach(button => {
+      button.addEventListener('click', () => runDbMaintenance(button.dataset.dbAction));
+    });
 
     function headers(extra = {}) {
       const key = els.apiKey.value.trim();
@@ -856,6 +877,49 @@ DASHBOARD_HTML = r"""<!doctype html>
       } catch (err) {
         els.dockerLogs.textContent = err.message;
       }
+    }
+
+    async function runDbMaintenance(action) {
+      const labels = {
+        backup: 'Backup DB',
+        cleanup_empty_live_batches: 'Cleanup Empty Imports',
+        vacuum: 'Vacuum DB',
+      };
+      if (action !== 'backup' && !window.confirm(`${labels[action] || action}?`)) return;
+      els.dbMaintenance.textContent = `Maintenance: running ${labels[action] || action}...`;
+      try {
+        const data = await api('/db/maintenance', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({action}),
+        });
+        const result = data.maintenance;
+        els.dbMaintenance.textContent = `Maintenance: ${formatMaintenanceResult(result)}`;
+        await refreshAll();
+      } catch (err) {
+        els.dbMaintenance.textContent = `Maintenance error: ${err.message}`;
+      }
+    }
+
+    function formatMaintenanceResult(result) {
+      if (result.action === 'backup') {
+        return `backup saved to ${result.backup_path} (${formatBytes(result.size_bytes)})`;
+      }
+      if (result.action === 'cleanup_empty_live_batches') {
+        return `deleted ${result.deleted_rows} empty imports (${result.before_batches} -> ${result.after_batches})`;
+      }
+      if (result.action === 'vacuum') {
+        return `vacuum saved ${formatBytes(result.saved_bytes)} (${formatBytes(result.before_size_bytes)} -> ${formatBytes(result.after_size_bytes)})`;
+      }
+      return JSON.stringify(result);
+    }
+
+    function formatBytes(bytes) {
+      const value = Number(bytes || 0);
+      if (value >= 1024 * 1024 * 1024) return `${(value / 1024 / 1024 / 1024).toFixed(2)} GB`;
+      if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(2)} MB`;
+      if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`;
+      return `${value} B`;
     }
 
     function formatDuration(seconds) {

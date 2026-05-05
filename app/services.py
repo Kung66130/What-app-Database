@@ -6,6 +6,7 @@ import os
 import platform
 import shutil
 import socket
+import sqlite3
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
@@ -811,6 +812,107 @@ def database_status() -> dict[str, Any]:
         }
     finally:
         conn.close()
+
+
+def run_database_maintenance(action: str) -> dict[str, Any]:
+    clean_action = action.strip().lower()
+    if clean_action == "backup":
+        return _backup_database()
+    if clean_action == "cleanup_empty_live_batches":
+        return _cleanup_empty_live_batches()
+    if clean_action == "vacuum":
+        return _vacuum_database()
+    raise ValueError(f"Unsupported maintenance action: {action}")
+
+
+def _backup_database() -> dict[str, Any]:
+    db_path = Path(settings.db_path)
+    if not db_path.exists():
+        raise FileNotFoundError(f"Database not found: {db_path}")
+
+    backup_dir = Path(settings.data_dir) / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = backup_dir / f"whatsapp_agent_{timestamp}.db"
+
+    source = sqlite3.connect(str(db_path))
+    target = sqlite3.connect(str(backup_path))
+    try:
+        source.backup(target)
+    finally:
+        target.close()
+        source.close()
+
+    return {
+        "action": "backup",
+        "backup_path": str(backup_path),
+        "size_bytes": backup_path.stat().st_size,
+    }
+
+
+def _cleanup_empty_live_batches() -> dict[str, Any]:
+    conn = get_connection()
+    try:
+        before = int(conn.execute("SELECT COUNT(*) AS count FROM import_batches").fetchone()["count"])
+        target_count = int(
+            conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM import_batches
+                WHERE file_name = 'LIVE_SYNC'
+                  AND COALESCE(parsed_messages, 0) = 0
+                  AND COALESCE(new_messages, 0) = 0
+                  AND COALESCE(duplicate_messages, 0) = 0
+                  AND id NOT IN (
+                    SELECT DISTINCT batch_id
+                    FROM messages
+                    WHERE batch_id IS NOT NULL
+                  )
+                """
+            ).fetchone()["count"]
+        )
+        cursor = conn.execute(
+            """
+            DELETE FROM import_batches
+            WHERE file_name = 'LIVE_SYNC'
+              AND COALESCE(parsed_messages, 0) = 0
+              AND COALESCE(new_messages, 0) = 0
+              AND COALESCE(duplicate_messages, 0) = 0
+              AND id NOT IN (
+                SELECT DISTINCT batch_id
+                FROM messages
+                WHERE batch_id IS NOT NULL
+              )
+            """
+        )
+        conn.commit()
+        after = int(conn.execute("SELECT COUNT(*) AS count FROM import_batches").fetchone()["count"])
+        return {
+            "action": "cleanup_empty_live_batches",
+            "deleted_rows": cursor.rowcount if cursor.rowcount >= 0 else target_count,
+            "target_rows": target_count,
+            "before_batches": before,
+            "after_batches": after,
+        }
+    finally:
+        conn.close()
+
+
+def _vacuum_database() -> dict[str, Any]:
+    db_path = Path(settings.db_path)
+    before_size = db_path.stat().st_size if db_path.exists() else 0
+    conn = get_connection()
+    try:
+        conn.execute("VACUUM")
+    finally:
+        conn.close()
+    after_size = db_path.stat().st_size if db_path.exists() else 0
+    return {
+        "action": "vacuum",
+        "before_size_bytes": before_size,
+        "after_size_bytes": after_size,
+        "saved_bytes": max(before_size - after_size, 0),
+    }
 
 
 def system_status() -> dict[str, Any]:
