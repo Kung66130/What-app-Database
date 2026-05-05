@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import os
 import platform
 import shutil
+import socket
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
@@ -13,6 +15,7 @@ from typing import Any
 import json
 import urllib.request
 import urllib.error
+import urllib.parse
 import hmac
 import hashlib
 import threading
@@ -844,6 +847,204 @@ def system_status() -> dict[str, Any]:
             "evolution_reachable": _http_reachable(settings.evolution_base_url),
         },
     }
+
+
+def docker_status() -> dict[str, Any]:
+    if not settings.docker_socket:
+        return {
+            "available": False,
+            "control_enabled": False,
+            "containers": [],
+            "error": "WA_AGENT_DOCKER_SOCKET is not configured",
+        }
+
+    if not Path(settings.docker_socket).exists():
+        return {
+            "available": False,
+            "control_enabled": False,
+            "containers": [],
+            "error": f"Docker socket not found: {settings.docker_socket}",
+        }
+
+    try:
+        containers = _docker_containers()
+        return {
+            "available": True,
+            "control_enabled": settings.docker_control_enabled,
+            "containers": containers,
+            "error": None,
+        }
+    except Exception as exc:
+        return {
+            "available": False,
+            "control_enabled": settings.docker_control_enabled,
+            "containers": [],
+            "error": _redact_sensitive_text(str(exc)),
+        }
+
+
+def docker_container_logs(name: str, tail: int = 120) -> dict[str, Any]:
+    container = _resolve_allowed_container(name)
+    tail = max(10, min(int(tail), 500))
+    query = urllib.parse.urlencode(
+        {
+            "stdout": "1",
+            "stderr": "1",
+            "timestamps": "1",
+            "tail": str(tail),
+        }
+    )
+    raw = _docker_request_bytes("GET", f"/containers/{urllib.parse.quote(container['id'])}/logs?{query}")
+    text = _decode_docker_log_stream(raw)
+    return {
+        "name": container["name"],
+        "logs": _redact_sensitive_text(text),
+        "tail": tail,
+    }
+
+
+def restart_docker_container(name: str) -> dict[str, Any]:
+    if not settings.docker_control_enabled:
+        raise PermissionError("Docker control is disabled")
+
+    container = _resolve_allowed_container(name)
+    _docker_request_bytes("POST", f"/containers/{urllib.parse.quote(container['id'])}/restart?t=10", expected_statuses={204})
+    return {
+        "status": "restarted",
+        "name": container["name"],
+    }
+
+
+def _docker_allowed_names() -> list[str]:
+    return [name.strip() for name in settings.docker_allowlist.split(",") if name.strip()]
+
+
+def _docker_containers() -> list[dict[str, Any]]:
+    query = urllib.parse.urlencode({"all": "1"})
+    data = _docker_request_json("GET", f"/containers/json?{query}") or []
+    allowed_names = _docker_allowed_names()
+    allowed_set = set(allowed_names)
+    containers: list[dict[str, Any]] = []
+
+    for item in data:
+        raw_names = [str(name).lstrip("/") for name in item.get("Names", [])]
+        if allowed_set and not allowed_set.intersection(raw_names):
+            continue
+
+        name = next((candidate for candidate in allowed_names if candidate in raw_names), raw_names[0] if raw_names else item.get("Id", "")[:12])
+        containers.append(
+            {
+                "id": str(item.get("Id", ""))[:12],
+                "name": name,
+                "image": item.get("Image"),
+                "state": item.get("State"),
+                "status": item.get("Status"),
+                "ports": _format_docker_ports(item.get("Ports") or []),
+                "restart_allowed": settings.docker_control_enabled and name in allowed_set,
+            }
+        )
+
+    order = {name: index for index, name in enumerate(allowed_names)}
+    containers.sort(key=lambda item: order.get(item["name"], 999))
+    return containers
+
+
+def _resolve_allowed_container(name: str) -> dict[str, str]:
+    clean_name = name.strip()
+    allowed = set(_docker_allowed_names())
+    if not clean_name or clean_name not in allowed:
+        raise ValueError("Container is not allowed")
+
+    for container in _docker_containers():
+        if container["name"] == clean_name:
+            return {"id": container["id"], "name": container["name"]}
+
+    raise ValueError(f"Container not found: {clean_name}")
+
+
+def _format_docker_ports(ports: list[dict[str, Any]]) -> list[str]:
+    formatted: list[str] = []
+    for port in ports:
+        private_port = port.get("PrivatePort")
+        public_port = port.get("PublicPort")
+        port_type = port.get("Type", "tcp")
+        if public_port:
+            formatted.append(f"{public_port}->{private_port}/{port_type}")
+        elif private_port:
+            formatted.append(f"{private_port}/{port_type}")
+    return formatted
+
+
+class _UnixHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, socket_path: str, timeout: float = 5) -> None:
+        super().__init__("localhost", timeout=timeout)
+        self.socket_path = socket_path
+
+    def connect(self) -> None:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(self.timeout)
+        sock.connect(self.socket_path)
+        self.sock = sock
+
+
+def _docker_request_json(method: str, path: str, body: dict[str, Any] | None = None) -> Any:
+    raw = _docker_request_bytes(method, path, body=body)
+    if not raw:
+        return None
+    return json.loads(raw.decode("utf-8"))
+
+
+def _docker_request_bytes(
+    method: str,
+    path: str,
+    body: dict[str, Any] | None = None,
+    expected_statuses: set[int] | None = None,
+) -> bytes:
+    if not settings.docker_socket:
+        raise RuntimeError("Docker socket is not configured")
+
+    expected = expected_statuses or {200}
+    payload = json.dumps(body).encode("utf-8") if body is not None else None
+    headers = {"Content-Type": "application/json"} if payload else {}
+    conn = _UnixHTTPConnection(settings.docker_socket, timeout=6)
+    try:
+        conn.request(method, path, body=payload, headers=headers)
+        response = conn.getresponse()
+        raw = response.read()
+        if response.status not in expected:
+            detail = _redact_sensitive_text(raw.decode("utf-8", errors="replace"))
+            raise RuntimeError(f"Docker API {response.status}: {detail or response.reason}")
+        return raw
+    finally:
+        conn.close()
+
+
+def _decode_docker_log_stream(raw: bytes) -> str:
+    chunks: list[bytes] = []
+    index = 0
+    while index + 8 <= len(raw) and raw[index] in {1, 2, 3} and raw[index + 1:index + 4] == b"\x00\x00\x00":
+        frame_size = int.from_bytes(raw[index + 4:index + 8], "big")
+        index += 8
+        chunks.append(raw[index:index + frame_size])
+        index += frame_size
+
+    if chunks and index == len(raw):
+        raw = b"".join(chunks)
+
+    return raw.decode("utf-8", errors="replace")
+
+
+def _redact_sensitive_text(text: str) -> str:
+    patterns = [
+        (r"(?i)(secret=)[^&\s'\",}]+", r"\1<redacted>"),
+        (r"(?i)(apikey['\"]?\s*[:=]\s*['\"]?)[A-Za-z0-9._~:/+=-]+", r"\1<redacted>"),
+        (r"(?i)((?:api[_-]?key|token|secret|password)['\"]?\s*[:=]\s*['\"]?)[A-Za-z0-9._~:/+=-]+", r"\1<redacted>"),
+        (r"xox[baprs]-[A-Za-z0-9-]+", "xox-<redacted>"),
+    ]
+    redacted = text
+    for pattern, replacement in patterns:
+        redacted = re.sub(pattern, replacement, redacted)
+    return redacted
 
 
 def _read_uptime_seconds() -> float | None:

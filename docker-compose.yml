@@ -11,6 +11,9 @@ services:
       - WA_AGENT_PORT=8080
       - WA_AGENT_DATA_DIR=/app/data
       - EVOLUTION_BASE_URL=http://evolution-api:8080
+      - WA_AGENT_DOCKER_SOCKET=/var/run/docker.sock
+      - WA_AGENT_DOCKER_CONTROL_ENABLED=true
+      - WA_AGENT_DOCKER_ALLOWLIST=whatsapp-agent,evolution-api,postgres-wa,redis-wa,portainer
     env_file:
       - .env
     ports:
@@ -19,6 +22,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - whatsapp-network
 

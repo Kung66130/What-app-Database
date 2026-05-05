@@ -10,6 +10,8 @@ from .config import settings
 from .services import (
     ask_agent,
     database_status,
+    docker_container_logs,
+    docker_status,
     export_state,
     handle_evolution_webhook,
     handle_slack_command,
@@ -18,6 +20,7 @@ from .services import (
     list_import_batches,
     list_users,
     search_messages,
+    restart_docker_container,
     system_status,
     verify_slack_signature,
 )
@@ -67,6 +70,21 @@ class ApiHandler(BaseHTTPRequestHandler):
 
         if path == "/system/status":
             self._write_json({"system": system_status()})
+            return
+
+        if path == "/docker/containers":
+            self._write_json({"docker": docker_status()})
+            return
+
+        if path == "/docker/logs":
+            name = _one(query, "name", "") or ""
+            tail = int(_one(query, "tail", "120") or "120")
+            try:
+                self._write_json({"docker_logs": docker_container_logs(name, tail=tail)})
+            except ValueError as exc:
+                self._write_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
+            except Exception as exc:
+                self._write_json({"error": str(exc)}, status=HTTPStatus.BAD_GATEWAY)
             return
 
         if path == "/messages/search":
@@ -209,6 +227,18 @@ class ApiHandler(BaseHTTPRequestHandler):
 
         if path == "/debug/state":
             self._write_json(export_state())
+            return
+
+        if path == "/docker/restart":
+            name = str(body.get("name", ""))
+            try:
+                self._write_json({"docker": restart_docker_container(name)})
+            except PermissionError as exc:
+                self._write_json({"error": str(exc)}, status=HTTPStatus.FORBIDDEN)
+            except ValueError as exc:
+                self._write_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
+            except Exception as exc:
+                self._write_json({"error": str(exc)}, status=HTTPStatus.BAD_GATEWAY)
             return
 
         self._write_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
@@ -463,6 +493,68 @@ DASHBOARD_HTML = r"""<!doctype html>
       font-size: 12px;
       font-weight: 680;
     }
+    .service-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 10px;
+    }
+    .service-card {
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #fff;
+      padding: 11px;
+      min-height: 132px;
+      display: grid;
+      gap: 7px;
+      align-content: start;
+    }
+    .service-card strong {
+      display: block;
+      font-size: 16px;
+      word-break: break-word;
+    }
+    .service-card small {
+      color: var(--muted);
+      display: block;
+      min-height: 18px;
+      word-break: break-word;
+    }
+    .badge {
+      justify-self: start;
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 12px;
+      font-weight: 720;
+      background: #f8ece8;
+      color: var(--danger);
+    }
+    .badge.running {
+      background: var(--surface-soft);
+      color: var(--accent-dark);
+    }
+    .service-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 2px;
+    }
+    .service-actions button {
+      min-height: 32px;
+      padding: 0 10px;
+      font-size: 12px;
+    }
+    .logs {
+      background: #101614;
+      color: #eaf4ef;
+      border-radius: 7px;
+      padding: 12px;
+      max-height: 280px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      margin: 12px 0 0;
+    }
     .list {
       display: grid;
       gap: 8px;
@@ -499,7 +591,7 @@ DASHBOARD_HTML = r"""<!doctype html>
     @media (max-width: 820px) {
       header, .toolbar, .fields { grid-template-columns: 1fr; align-items: stretch; }
       header { display: grid; padding: 16px; }
-      .grid, .summary, .system-grid { grid-template-columns: 1fr; }
+      .grid, .summary, .system-grid, .service-grid { grid-template-columns: 1fr; }
       main { width: min(100vw - 20px, 1180px); margin-top: 12px; }
     }
   </style>
@@ -541,6 +633,13 @@ DASHBOARD_HTML = r"""<!doctype html>
         <div class="system-item"><span>Evolution API</span><strong id="evolutionStatus">-</strong></div>
       </div>
       <p id="systemDetail" class="muted" style="margin:12px 0 0">System: checking</p>
+    </section>
+
+    <section>
+      <h2>Docker Services</h2>
+      <div id="dockerServices" class="service-grid"></div>
+      <p id="dockerLogTitle" class="muted" style="margin:12px 0 0">Logs: select a service</p>
+      <pre id="dockerLogs" class="logs">No logs loaded</pre>
     </section>
 
     <div class="grid">
@@ -599,6 +698,9 @@ DASHBOARD_HTML = r"""<!doctype html>
       dataDisk: document.getElementById('dataDisk'),
       evolutionStatus: document.getElementById('evolutionStatus'),
       systemDetail: document.getElementById('systemDetail'),
+      dockerServices: document.getElementById('dockerServices'),
+      dockerLogTitle: document.getElementById('dockerLogTitle'),
+      dockerLogs: document.getElementById('dockerLogs'),
       messages: document.getElementById('messages'),
       imports: document.getElementById('imports'),
       users: document.getElementById('users'),
@@ -616,6 +718,7 @@ DASHBOARD_HTML = r"""<!doctype html>
     document.getElementById('refresh').addEventListener('click', refreshAll);
     document.getElementById('runSearch').addEventListener('click', runSearch);
     document.getElementById('runAsk').addEventListener('click', runAsk);
+    els.dockerServices.addEventListener('click', handleDockerAction);
 
     function headers(extra = {}) {
       const key = els.apiKey.value.trim();
@@ -651,11 +754,12 @@ DASHBOARD_HTML = r"""<!doctype html>
     async function refreshAll() {
       await checkHealth();
       try {
-        const [groups, users, imports, system] = await Promise.all([
+        const [groups, users, imports, system, docker] = await Promise.all([
           api('/groups'),
           api('/users?limit=20'),
           api('/imports?limit=20'),
           api('/system/status'),
+          api('/docker/containers'),
         ]);
         const db = await api('/db/status');
         const counts = db.database.counts || {};
@@ -665,11 +769,13 @@ DASHBOARD_HTML = r"""<!doctype html>
         els.messageCount.textContent = counts.messages ?? '-';
         els.dbStatus.textContent = `Database: ${db.database.db_path}`;
         renderSystem(system.system);
+        renderDocker(docker.docker);
         els.users.innerHTML = users.users.map(u => row(u.display_name, `${u.msg_count} messages`, u.normalized_name)).join('') || '<p class="muted">No users</p>';
         els.imports.innerHTML = imports.imports.map(i => row(i.group_name, i.imported_at, `${i.file_name} | new ${i.new_messages} | duplicate ${i.duplicate_messages}`)).join('') || '<p class="muted">No imports</p>';
       } catch (err) {
         els.imports.innerHTML = `<p class="error">${escapeHtml(err.message)}</p>`;
         els.users.innerHTML = `<p class="error">${escapeHtml(err.message)}</p>`;
+        els.dockerServices.innerHTML = `<p class="error">${escapeHtml(err.message)}</p>`;
       }
     }
 
@@ -684,6 +790,72 @@ DASHBOARD_HTML = r"""<!doctype html>
       els.dataDisk.textContent = dataDisk ? `${dataDisk.used_percent}% used` : 'n/a';
       els.evolutionStatus.textContent = system.integrations && system.integrations.evolution_reachable ? 'reachable' : 'not reachable';
       els.systemDetail.textContent = `Host: ${system.hostname} | Python ${system.python_version} | data ${system.app.data_dir}`;
+    }
+
+    function renderDocker(docker) {
+      if (!docker || !docker.available) {
+        const message = docker && docker.error ? docker.error : 'Docker status unavailable';
+        els.dockerServices.innerHTML = `<p class="muted">${escapeHtml(message)}</p>`;
+        return;
+      }
+      els.dockerServices.innerHTML = docker.containers.map(container => {
+        const running = container.state === 'running';
+        const ports = (container.ports || []).join(', ') || 'internal';
+        const restartButton = container.restart_allowed
+          ? `<button type="button" data-action="restart" data-name="${escapeHtml(container.name)}">Restart</button>`
+          : '';
+        return `
+          <div class="service-card">
+            <span class="badge ${running ? 'running' : ''}">${escapeHtml(container.state || 'unknown')}</span>
+            <strong>${escapeHtml(container.name)}</strong>
+            <small>${escapeHtml(container.status || '')}</small>
+            <small>${escapeHtml(ports)}</small>
+            <div class="service-actions">
+              <button class="secondary" type="button" data-action="logs" data-name="${escapeHtml(container.name)}">Logs</button>
+              ${restartButton}
+            </div>
+          </div>
+        `;
+      }).join('') || '<p class="muted">No allowed containers</p>';
+    }
+
+    async function handleDockerAction(event) {
+      const button = event.target.closest('button[data-action]');
+      if (!button) return;
+      const name = button.dataset.name;
+      if (button.dataset.action === 'logs') {
+        await loadDockerLogs(name);
+        return;
+      }
+      if (button.dataset.action === 'restart') {
+        if (!window.confirm(`Restart ${name}?`)) return;
+        button.disabled = true;
+        try {
+          await api('/docker/restart', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name}),
+          });
+          els.dockerLogTitle.textContent = `Logs: ${name}`;
+          els.dockerLogs.textContent = `${name} restart requested. Refreshing status...`;
+          setTimeout(refreshAll, 1600);
+        } catch (err) {
+          els.dockerLogs.textContent = err.message;
+        } finally {
+          button.disabled = false;
+        }
+      }
+    }
+
+    async function loadDockerLogs(name) {
+      els.dockerLogTitle.textContent = `Logs: ${name}`;
+      els.dockerLogs.textContent = 'Loading logs...';
+      try {
+        const data = await api(`/docker/logs?name=${encodeURIComponent(name)}&tail=120`);
+        els.dockerLogs.textContent = data.docker_logs.logs || 'No logs';
+      } catch (err) {
+        els.dockerLogs.textContent = err.message;
+      }
     }
 
     function formatDuration(seconds) {

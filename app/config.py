@@ -27,6 +27,17 @@ class Settings:
     evolution_base_url: str = os.getenv("EVOLUTION_BASE_URL", "http://evolution-api:8080")
     evolution_instance: str = os.getenv("EVOLUTION_INSTANCE", "whatsapp-pi-new")
     evolution_api_key: str = os.getenv("EVOLUTION_API_KEY", "")
+    docker_socket: str = os.getenv("WA_AGENT_DOCKER_SOCKET", "")
+    docker_allowlist: str = os.getenv(
+        "WA_AGENT_DOCKER_ALLOWLIST",
+        "whatsapp-agent,evolution-api,postgres-wa,redis-wa,portainer",
+    )
+    docker_control_enabled: bool = os.getenv("WA_AGENT_DOCKER_CONTROL_ENABLED", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 settings = Settings()
