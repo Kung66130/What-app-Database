@@ -35,6 +35,11 @@ class ApiHandler(BaseHTTPRequestHandler):
             self._write_json({"status": "ok", "app": settings.app_name})
             return
 
+        if path == "/favicon.ico":
+            self.send_response(HTTPStatus.NO_CONTENT.value)
+            self.end_headers()
+            return
+
         if path in {"/", "/dashboard"}:
             self._write_html(DASHBOARD_HTML)
             return
@@ -520,7 +525,7 @@ DASHBOARD_HTML = r"""<!doctype html>
         <div class="metric"><strong id="groupCount">-</strong><span>groups</span></div>
         <div class="metric"><strong id="userCount">-</strong><span>users</span></div>
         <div class="metric"><strong id="importCount">-</strong><span>imports</span></div>
-        <div class="metric"><strong id="messageCount">-</strong><span>latest search hits</span></div>
+        <div class="metric"><strong id="messageCount">-</strong><span>messages</span></div>
       </div>
       <p id="dbStatus" class="muted" style="margin:12px 0 0">Database: checking</p>
     </section>
@@ -653,11 +658,12 @@ DASHBOARD_HTML = r"""<!doctype html>
           api('/system/status'),
         ]);
         const db = await api('/db/status');
-        els.groupCount.textContent = groups.groups.length;
-        els.userCount.textContent = users.users.length;
-        els.importCount.textContent = imports.imports.length;
         const counts = db.database.counts || {};
-        els.dbStatus.textContent = `Database: ${db.database.db_path} | messages ${counts.messages || 0}`;
+        els.groupCount.textContent = counts.groups ?? groups.groups.length;
+        els.userCount.textContent = counts.users ?? users.users.length;
+        els.importCount.textContent = counts.import_batches ?? imports.imports.length;
+        els.messageCount.textContent = counts.messages ?? '-';
+        els.dbStatus.textContent = `Database: ${db.database.db_path}`;
         renderSystem(system.system);
         els.users.innerHTML = users.users.map(u => row(u.display_name, `${u.msg_count} messages`, u.normalized_name)).join('') || '<p class="muted">No users</p>';
         els.imports.innerHTML = imports.imports.map(i => row(i.group_name, i.imported_at, `${i.file_name} | new ${i.new_messages} | duplicate ${i.duplicate_messages}`)).join('') || '<p class="muted">No imports</p>';
@@ -698,7 +704,6 @@ DASHBOARD_HTML = r"""<!doctype html>
       params.set('limit', '20');
       try {
         const data = await api(`/messages/search?${params.toString()}`);
-        els.messageCount.textContent = data.count;
         els.messages.innerHTML = data.messages.map(m => row(m.sender_name || 'System', m.sent_at, m.content_raw)).join('') || '<p class="muted">No messages</p>';
       } catch (err) {
         els.messages.innerHTML = `<p class="error">${escapeHtml(err.message)}</p>`;
