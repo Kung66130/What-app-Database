@@ -1,0 +1,59 @@
+erDiagram
+    groups ||--o{ import_batches : has
+    groups ||--o{ messages : contains
+    users ||--o{ messages : sends
+    import_batches ||--o{ messages : imports
+    messages ||--|| messages_fts : indexes
+
+    groups {
+        INTEGER id PK
+        TEXT group_name UK
+        TEXT remote_jid UK
+        TEXT description
+        TEXT timezone
+        TEXT source_owner
+        TEXT created_at
+    }
+
+    users {
+        INTEGER id PK
+        TEXT display_name
+        TEXT normalized_name UK
+        TEXT phone_number
+        TEXT created_at
+    }
+
+    import_batches {
+        INTEGER id PK
+        INTEGER group_id FK
+        TEXT file_name
+        TEXT file_sha1
+        TEXT imported_at
+        INTEGER total_lines
+        INTEGER parsed_messages
+        INTEGER new_messages
+        INTEGER duplicate_messages
+    }
+
+    messages {
+        INTEGER id PK
+        INTEGER group_id FK
+        INTEGER sender_id FK
+        INTEGER batch_id FK
+        TEXT sent_at
+        TEXT message_type
+        TEXT content_raw
+        TEXT content_normalized
+        TEXT content_th
+        TEXT media_path
+        TEXT source_hash UK
+        INTEGER source_line_start
+        INTEGER source_line_end
+        TEXT created_at
+    }
+
+    messages_fts {
+        TEXT content_raw
+        TEXT content_normalized
+        INTEGER content_id
+    }
