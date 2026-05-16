@@ -16,3 +16,9 @@ build_whatsapp_plan.py
 .DS_Store
 Thumbs.db
 .env
+.env.*
+*.key
+*.pem
+node_modules/
+dist/
+build/
