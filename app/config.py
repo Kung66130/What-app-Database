@@ -20,6 +20,8 @@ class Settings:
     slack_signing_secret: str = os.getenv("SLACK_SIGNING_SECRET", "")
     slack_bot_token: str = os.getenv("SLACK_BOT_TOKEN", "")
     slack_allowed_channels: str = os.getenv("SLACK_ALLOWED_CHANNELS", "") # Comma separated IDs
+    api_key: str = os.getenv("WA_API_KEY", "")
+    evolution_api_key: str = os.getenv("EVOLUTION_API_KEY", "")
 
 
 settings = Settings()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hmac
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -31,6 +32,13 @@ class ApiHandler(BaseHTTPRequestHandler):
         if path == "/health":
             self._write_json({"status": "ok", "app": settings.app_name})
             return
+
+        # API Key Protection
+        if settings.api_key:
+            provided_key = (self.headers.get("x-api-key") or query.get("api_key", [""])[0]).strip()
+            if not hmac.compare_digest(provided_key, settings.api_key):
+                self._write_json({"error": "Unauthorized"}, status=HTTPStatus.UNAUTHORIZED)
+                return
 
         if path == "/groups":
             self._write_json({"groups": list_groups()})
@@ -174,12 +182,25 @@ class ApiHandler(BaseHTTPRequestHandler):
 
         if path.startswith("/webhooks/whatsapp"):
             # This endpoint is for Evolution API
+            # Check Evolution API Key if configured
+            if settings.evolution_api_key:
+                provided_key = (self.headers.get("apikey") or self.headers.get("x-api-key") or "").strip()
+                if not hmac.compare_digest(provided_key, settings.evolution_api_key):
+                    print(f"Unauthorized WhatsApp Webhook attempt from {self.client_address}")
+                    self._write_json({"error": "Unauthorized"}, status=HTTPStatus.UNAUTHORIZED)
+                    return
+
             print(f"DEBUG: Received WhatsApp Webhook on {path}: {json.dumps(body)[:100]}...")
             result = handle_evolution_webhook(body)
             self._write_json(result)
             return
 
         if path == "/debug/state":
+            if settings.api_key:
+                provided_key = (self.headers.get("x-api-key") or "").strip()
+                if not hmac.compare_digest(provided_key, settings.api_key):
+                    self._write_json({"error": "Unauthorized"}, status=HTTPStatus.UNAUTHORIZED)
+                    return
             self._write_json(export_state())
             return
 
