@@ -8,12 +8,18 @@ from app.services import handle_evolution_webhook
 db_path = os.getenv("DB_PATH", "data/whatsapp_agent.db")
 conn = sqlite3.connect(db_path)
 conn.row_factory = sqlite3.Row
+base_url = os.getenv("EVOLUTION_BASE_URL", "http://evolution-api:8080").rstrip("/")
+instance = os.getenv("EVOLUTION_INSTANCE", "whatsapp-pi-new")
+api_key = os.getenv("EVOLUTION_API_KEY", "")
+
+if not api_key:
+    raise SystemExit("Missing EVOLUTION_API_KEY")
 
 def fetch_messages_page(page, limit):
     req = urllib.request.Request(
-        'http://evolution-api:8080/chat/findMessages/whatsapp-pi-new',
+        f"{base_url}/chat/findMessages/{instance}",
         data=json.dumps({"page": page, "limit": limit}).encode(),
-        headers={'apikey': 'wa-agent-secret-key', 'Content-Type': 'application/json'}
+        headers={"apikey": api_key, "Content-Type": "application/json"}
     )
     with urllib.request.urlopen(req) as resp:
         return json.loads(resp.read().decode())

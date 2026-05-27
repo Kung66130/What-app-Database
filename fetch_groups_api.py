@@ -2,12 +2,17 @@ import json
 import urllib.request
 import os
 
-# ใช้ IP ของ Raspberry Pi ผ่าน Tailscale
-url = "http://100.123.233.122:8081/group/fetchAllGroups/whatsapp-pi-new"
+base_url = os.getenv("EVOLUTION_PUBLIC_URL", os.getenv("EVOLUTION_BASE_URL", "http://127.0.0.1:8081")).rstrip("/")
+instance = os.getenv("EVOLUTION_INSTANCE", "whatsapp-pi-new")
+api_key = os.getenv("EVOLUTION_API_KEY", "")
+url = f"{base_url}/group/fetchAllGroups/{instance}"
 headers = {
-    "apikey": "wa-agent-secret-key",
+    "apikey": api_key,
     "Content-Type": "application/json"
 }
+
+if not api_key:
+    raise SystemExit("Missing EVOLUTION_API_KEY")
 
 print(f"Fetching groups from {url}...")
 try:

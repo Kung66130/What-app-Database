@@ -30,7 +30,20 @@ cd /home/admin
 git clone https://github.com/Kung66130/What-app-Database.git what-app-database
 cd /home/admin/what-app-database
 mkdir -p data
+cp .env.example .env
+nano .env
 docker compose up -d --build
+```
+
+ค่าอย่างน้อยที่ควรตั้งใน `.env`:
+
+```bash
+EVOLUTION_API_KEY=ตั้งค่าเป็นคีย์ลับของคุณ
+EVOLUTION_INSTANCE=ชื่อ instance ใน Evolution API
+EVOLUTION_SERVER_URL=http://<PI_IP>:8081
+EVOLUTION_PUBLIC_URL=http://<PI_IP>:8081
+WA_AGENT_API_KEY=ตั้งค่าเป็นคีย์สำหรับเรียก API ภายใน
+WA_AGENT_WEBHOOK_SECRET=ตั้งค่าเป็นคีย์สำหรับ Evolution webhook
 ```
 
 เช็กสถานะ:
@@ -53,6 +66,7 @@ docker compose exec whatsapp-agent python main.py import ./sample_data/uk_team_e
 
 ```bash
 curl -X POST http://127.0.0.1:8080/imports/whatsapp \
+  -H 'X-WA-Agent-Key: <WA_AGENT_API_KEY>' \
   -H 'Content-Type: application/json' \
   --data-binary @payload.json
 ```
@@ -78,6 +92,14 @@ curl http://127.0.0.1:8080/health
 ```bash
 curl http://<PI_IP>:8080/health
 ```
+
+เปิด dashboard จาก browser:
+
+```text
+http://<PI_IP>:8080/dashboard
+```
+
+ถ้าตั้งค่า `WA_AGENT_API_KEY` ให้กรอก key นั้นในช่อง API key บนหน้า dashboard แล้วกด `Save key`
 
 ## การตั้งค่า AI Agent (Ollama)
 
@@ -119,7 +141,7 @@ curl http://<PI_IP>:8080/health
     - สแกน QR Code ด้วยแอป WhatsApp ในมือถือของคุณ
 
 3.  **ตั้งค่า Webhook (ถ้ายังไม่ได้ตั้งใน config)**:
-    - ตรวจสอบว่า Webhook URL ชี้ไปที่ `http://whatsapp-agent:8080/webhooks/whatsapp`
+    - ตรวจสอบว่า Webhook URL ชี้ไปที่ `http://whatsapp-agent:8080/webhooks/whatsapp?secret=<WA_AGENT_WEBHOOK_SECRET>`
     - เปิดใช้งาน Event `MESSAGES_UPSERT`
 
 เมื่อเชื่อมต่อสำเร็จ ทุกข้อความที่ไหลเข้าใน WhatsApp (รวมถึงในกลุ่ม) จะถูกบันทึกลง SQLite โดยอัตโนมัติใน Batch ที่ชื่อว่า `LIVE_SYNC` ครับ

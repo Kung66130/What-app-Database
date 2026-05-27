@@ -51,6 +51,14 @@ C:\Users\kung6\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\p
 
 Server จะฟังที่ `http://127.0.0.1:8080`
 
+เปิด dashboard:
+
+```text
+http://127.0.0.1:8080/dashboard
+```
+
+ถ้าตั้ง `WA_AGENT_API_KEY` ให้กรอก key เดียวกันในช่อง API key บนหน้า dashboard
+
 ## รันแบบ container
 
 ```bash
@@ -71,12 +79,26 @@ docker compose ps
 
 ## API ที่มี
 
+- `GET /` และ `GET /dashboard`
 - `GET /health`
 - `GET /groups`
 - `GET /imports`
+- `GET /db/status`
 - `GET /messages/search?q=SKU-001&group_name=UK%20Team`
 - `POST /imports/whatsapp`
 - `POST /agent/ask`
+
+ถ้าตั้งค่า `WA_AGENT_API_KEY` ต้องส่ง header นี้กับ API ภายใน:
+
+```bash
+X-WA-Agent-Key: your-key
+```
+
+สำหรับ Evolution webhook ถ้าตั้งค่า `WA_AGENT_WEBHOOK_SECRET` ให้ใส่ secret ใน webhook URL:
+
+```text
+http://whatsapp-agent:8080/webhooks/whatsapp?secret=your-webhook-secret
+```
 
 ตัวอย่าง `POST /imports/whatsapp`
 

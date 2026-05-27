@@ -1,11 +1,17 @@
 import json
+import os
 import urllib.request
 
-url = "http://100.123.233.122:8081/instance/fetchInstances"
+base_url = os.getenv("EVOLUTION_PUBLIC_URL", os.getenv("EVOLUTION_BASE_URL", "http://127.0.0.1:8081")).rstrip("/")
+api_key = os.getenv("EVOLUTION_API_KEY", "")
+url = f"{base_url}/instance/fetchInstances"
 headers = {
-    "apikey": "wa-agent-secret-key",
+    "apikey": api_key,
     "Content-Type": "application/json"
 }
+
+if not api_key:
+    raise SystemExit("Missing EVOLUTION_API_KEY")
 
 print(f"Fetching instances from {url}...")
 try:

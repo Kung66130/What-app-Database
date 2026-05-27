@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="880" viewBox="0 0 1320 880" role="img" aria-labelledby="title desc">
+  <title id="title">WhatsApp Agent Database ERD</title>
+  <desc id="desc">Entity relationship diagram for groups, users, import_batches, messages, and messages_fts tables.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f6f7f4; }
+      .card { fill: #ffffff; stroke: #cfd9d4; stroke-width: 1.5; rx: 8; }
+      .head { fill: #0b7f65; }
+      .title { fill: #ffffff; font: 700 18px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .field { fill: #17211d; font: 14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .key { fill: #0b7f65; font-weight: 700; }
+      .rel { stroke: #5f716a; stroke-width: 2; fill: none; }
+      .relText { fill: #4d5f58; font: 700 13px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .pageTitle { fill: #17211d; font: 800 28px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .note { fill: #61706a; font: 14px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    </style>
+    <marker id="one" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L2,10" stroke="#5f716a" stroke-width="2"/>
+      <path d="M6,2 L6,10" stroke="#5f716a" stroke-width="2"/>
+    </marker>
+    <marker id="many" markerWidth="16" markerHeight="14" refX="14" refY="7" orient="auto">
+      <path d="M2,7 L14,2 M2,7 L14,7 M2,7 L14,12" stroke="#5f716a" stroke-width="2" fill="none"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="1320" height="880"/>
+  <text class="pageTitle" x="48" y="56">WhatsApp Agent Database ERD</text>
+  <text class="note" x="48" y="82">SQLite schema from app/db.py. PK = primary key, FK = foreign key, UK = unique key.</text>
+
+  <g id="groups">
+    <rect class="card" x="48" y="130" width="270" height="245"/>
+    <rect class="head" x="48" y="130" width="270" height="44" rx="8"/>
+    <text class="title" x="66" y="158">groups</text>
+    <text class="field" x="66" y="204"><tspan class="key">PK</tspan> id INTEGER</text>
+    <text class="field" x="66" y="228"><tspan class="key">UK</tspan> group_name TEXT</text>
+    <text class="field" x="66" y="252"><tspan class="key">UK</tspan> remote_jid TEXT</text>
+    <text class="field" x="66" y="276">description TEXT</text>
+    <text class="field" x="66" y="300">timezone TEXT</text>
+    <text class="field" x="66" y="324">source_owner TEXT</text>
+    <text class="field" x="66" y="348">created_at TEXT</text>
+  </g>
+
+  <g id="users">
+    <rect class="card" x="48" y="500" width="270" height="190"/>
+    <rect class="head" x="48" y="500" width="270" height="44" rx="8"/>
+    <text class="title" x="66" y="528">users</text>
+    <text class="field" x="66" y="574"><tspan class="key">PK</tspan> id INTEGER</text>
+    <text class="field" x="66" y="598">display_name TEXT</text>
+    <text class="field" x="66" y="622"><tspan class="key">UK</tspan> normalized_name TEXT</text>
+    <text class="field" x="66" y="646">phone_number TEXT</text>
+    <text class="field" x="66" y="670">created_at TEXT</text>
+  </g>
+
+  <g id="import_batches">
+    <rect class="card" x="505" y="112" width="310" height="292"/>
+    <rect class="head" x="505" y="112" width="310" height="44" rx="8"/>
+    <text class="title" x="523" y="140">import_batches</text>
+    <text class="field" x="523" y="186"><tspan class="key">PK</tspan> id INTEGER</text>
+    <text class="field" x="523" y="210"><tspan class="key">FK</tspan> group_id INTEGER</text>
+    <text class="field" x="523" y="234">file_name TEXT</text>
+    <text class="field" x="523" y="258">file_sha1 TEXT</text>
+    <text class="field" x="523" y="282">imported_at TEXT</text>
+    <text class="field" x="523" y="306">total_lines INTEGER</text>
+    <text class="field" x="523" y="330">parsed_messages INTEGER</text>
+    <text class="field" x="523" y="354">new_messages INTEGER</text>
+    <text class="field" x="523" y="378">duplicate_messages INTEGER</text>
+  </g>
+
+  <g id="messages">
+    <rect class="card" x="505" y="470" width="350" height="365"/>
+    <rect class="head" x="505" y="470" width="350" height="44" rx="8"/>
+    <text class="title" x="523" y="498">messages</text>
+    <text class="field" x="523" y="544"><tspan class="key">PK</tspan> id INTEGER</text>
+    <text class="field" x="523" y="568"><tspan class="key">FK</tspan> group_id INTEGER</text>
+    <text class="field" x="523" y="592"><tspan class="key">FK</tspan> sender_id INTEGER</text>
+    <text class="field" x="523" y="616"><tspan class="key">FK</tspan> batch_id INTEGER</text>
+    <text class="field" x="523" y="640">sent_at TEXT</text>
+    <text class="field" x="523" y="664">message_type TEXT</text>
+    <text class="field" x="523" y="688">content_raw TEXT</text>
+    <text class="field" x="523" y="712">content_normalized TEXT</text>
+    <text class="field" x="523" y="736">content_th TEXT</text>
+    <text class="field" x="523" y="760">media_path TEXT</text>
+    <text class="field" x="523" y="784"><tspan class="key">UK</tspan> source_hash TEXT</text>
+    <text class="field" x="523" y="808">source_line_start INTEGER</text>
+  </g>
+
+  <g id="messages_fts">
+    <rect class="card" x="1000" y="560" width="270" height="150"/>
+    <rect class="head" x="1000" y="560" width="270" height="44" rx="8"/>
+    <text class="title" x="1018" y="588">messages_fts</text>
+    <text class="field" x="1018" y="634">content_raw TEXT</text>
+    <text class="field" x="1018" y="658">content_normalized TEXT</text>
+    <text class="field" x="1018" y="682">content_id INTEGER</text>
+  </g>
+
+  <path class="rel" d="M318 230 C390 230, 430 230, 505 230" marker-start="url(#one)" marker-end="url(#many)"/>
+  <text class="relText" x="384" y="216">has</text>
+
+  <path class="rel" d="M318 322 C400 420, 420 560, 505 592" marker-start="url(#one)" marker-end="url(#many)"/>
+  <text class="relText" x="365" y="470">contains</text>
+
+  <path class="rel" d="M318 595 C390 595, 430 595, 505 595" marker-start="url(#one)" marker-end="url(#many)"/>
+  <text class="relText" x="386" y="580">sends</text>
+
+  <path class="rel" d="M660 404 C660 432, 660 444, 660 470" marker-start="url(#one)" marker-end="url(#many)"/>
+  <text class="relText" x="675" y="444">imports</text>
+
+  <path class="rel" d="M855 642 C910 642, 945 642, 1000 642" marker-start="url(#one)" marker-end="url(#one)"/>
+  <text class="relText" x="905" y="628">indexes</text>
+</svg>

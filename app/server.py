@@ -9,6 +9,9 @@ from urllib.parse import parse_qs, urlparse
 from .config import settings
 from .services import (
     ask_agent,
+    database_status,
+    docker_container_logs,
+    docker_status,
     export_state,
     handle_evolution_webhook,
     handle_slack_command,
@@ -16,7 +19,10 @@ from .services import (
     list_groups,
     list_import_batches,
     list_users,
+    run_database_maintenance,
     search_messages,
+    restart_docker_container,
+    system_status,
     verify_slack_signature,
 )
 
@@ -33,12 +39,17 @@ class ApiHandler(BaseHTTPRequestHandler):
             self._write_json({"status": "ok", "app": settings.app_name})
             return
 
-        # API Key Protection
-        if settings.api_key:
-            provided_key = (self.headers.get("x-api-key") or query.get("api_key", [""])[0]).strip()
-            if not hmac.compare_digest(provided_key, settings.api_key):
-                self._write_json({"error": "Unauthorized"}, status=HTTPStatus.UNAUTHORIZED)
-                return
+        if path == "/favicon.ico":
+            self.send_response(HTTPStatus.NO_CONTENT.value)
+            self.end_headers()
+            return
+
+        if path in {"/", "/dashboard"}:
+            self._write_html(DASHBOARD_HTML)
+            return
+
+        if not self._authorize_api_request():
+            return
 
         if path == "/groups":
             self._write_json({"groups": list_groups()})
@@ -52,6 +63,29 @@ class ApiHandler(BaseHTTPRequestHandler):
         if path == "/imports":
             limit = int(query.get("limit", ["20"])[0])
             self._write_json({"imports": list_import_batches(limit=limit)})
+            return
+
+        if path == "/db/status":
+            self._write_json({"database": database_status()})
+            return
+
+        if path == "/system/status":
+            self._write_json({"system": system_status()})
+            return
+
+        if path == "/docker/containers":
+            self._write_json({"docker": docker_status()})
+            return
+
+        if path == "/docker/logs":
+            name = _one(query, "name", "") or ""
+            tail = int(_one(query, "tail", "120") or "120")
+            try:
+                self._write_json({"docker_logs": docker_container_logs(name, tail=tail)})
+            except ValueError as exc:
+                self._write_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
+            except Exception as exc:
+                self._write_json({"error": str(exc)}, status=HTTPStatus.BAD_GATEWAY)
             return
 
         if path == "/messages/search":
@@ -149,6 +183,18 @@ class ApiHandler(BaseHTTPRequestHandler):
             print("DEBUG: Failed to read JSON body")
             return
 
+        if path.startswith("/webhooks/whatsapp"):
+            query = parse_qs(parsed.query)
+            if not self._authorize_webhook_request(query):
+                return
+            print(f"DEBUG: Received WhatsApp Webhook on {path}: {json.dumps(body)[:100]}...")
+            result = handle_evolution_webhook(body)
+            self._write_json(result)
+            return
+
+        if not self._authorize_api_request():
+            return
+
         if path == "/imports/whatsapp":
             required = ["group_name", "file_name", "content"]
             missing = [name for name in required if not body.get(name)]
@@ -180,28 +226,30 @@ class ApiHandler(BaseHTTPRequestHandler):
             self._write_json(result)
             return
 
-        if path.startswith("/webhooks/whatsapp"):
-            # This endpoint is for Evolution API
-            # Check Evolution API Key if configured
-            if settings.evolution_api_key:
-                provided_key = (self.headers.get("apikey") or self.headers.get("x-api-key") or "").strip()
-                if not hmac.compare_digest(provided_key, settings.evolution_api_key):
-                    print(f"Unauthorized WhatsApp Webhook attempt from {self.client_address}")
-                    self._write_json({"error": "Unauthorized"}, status=HTTPStatus.UNAUTHORIZED)
-                    return
-
-            print(f"DEBUG: Received WhatsApp Webhook on {path}: {json.dumps(body)[:100]}...")
-            result = handle_evolution_webhook(body)
-            self._write_json(result)
+        if path == "/debug/state":
+            self._write_json(export_state())
             return
 
-        if path == "/debug/state":
-            if settings.api_key:
-                provided_key = (self.headers.get("x-api-key") or "").strip()
-                if not hmac.compare_digest(provided_key, settings.api_key):
-                    self._write_json({"error": "Unauthorized"}, status=HTTPStatus.UNAUTHORIZED)
-                    return
-            self._write_json(export_state())
+        if path == "/db/maintenance":
+            action = str(body.get("action", ""))
+            try:
+                self._write_json({"maintenance": run_database_maintenance(action)})
+            except ValueError as exc:
+                self._write_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            except Exception as exc:
+                self._write_json({"error": str(exc)}, status=HTTPStatus.BAD_GATEWAY)
+            return
+
+        if path == "/docker/restart":
+            name = str(body.get("name", ""))
+            try:
+                self._write_json({"docker": restart_docker_container(name)})
+            except PermissionError as exc:
+                self._write_json({"error": str(exc)}, status=HTTPStatus.FORBIDDEN)
+            except ValueError as exc:
+                self._write_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
+            except Exception as exc:
+                self._write_json({"error": str(exc)}, status=HTTPStatus.BAD_GATEWAY)
             return
 
         self._write_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
@@ -226,6 +274,43 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _write_html(self, html: str, status: HTTPStatus = HTTPStatus.OK) -> None:
+        body = html.encode("utf-8")
+        self.send_response(status.value)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _authorize_api_request(self) -> bool:
+        if not settings.api_key:
+            return True
+
+        supplied = self.headers.get("X-WA-Agent-Key", "")
+        if not supplied:
+            auth_header = self.headers.get("Authorization", "")
+            if auth_header.lower().startswith("bearer "):
+                supplied = auth_header[7:].strip()
+
+        if hmac.compare_digest(supplied, settings.api_key):
+            return True
+
+        self._write_json({"error": "Unauthorized"}, status=HTTPStatus.UNAUTHORIZED)
+        return False
+
+    def _authorize_webhook_request(self, query: dict[str, list[str]] | None = None) -> bool:
+        if not settings.webhook_secret:
+            return True
+
+        supplied = self.headers.get("X-WA-Webhook-Secret", "")
+        if not supplied and query:
+            supplied = _one(query, "secret", "") or ""
+        if hmac.compare_digest(supplied, settings.webhook_secret):
+            return True
+
+        self._write_json({"error": "Unauthorized webhook"}, status=HTTPStatus.UNAUTHORIZED)
+        return False
+
 
 def run_server() -> None:
     server = ThreadingHTTPServer((settings.host, settings.port), ApiHandler)
@@ -238,3 +323,654 @@ def _one(query: dict[str, list[str]], key: str, default: str | None = None) -> s
     if not values:
         return default
     return values[0]
+
+
+DASHBOARD_HTML = r"""<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WhatsApp Agent Dashboard</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f4;
+      --surface: #ffffff;
+      --surface-soft: #eef5f1;
+      --text: #17211d;
+      --muted: #61706a;
+      --line: #dbe3df;
+      --accent: #0b7f65;
+      --accent-dark: #075d4a;
+      --warn: #a86600;
+      --danger: #b42318;
+      --radius: 8px;
+      --shadow: 0 14px 34px rgba(23, 33, 29, 0.08);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 18px 28px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.86);
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      backdrop-filter: blur(12px);
+    }
+    h1 {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 760;
+      letter-spacing: 0;
+    }
+    h2 {
+      margin: 0 0 14px;
+      font-size: 15px;
+      font-weight: 730;
+      letter-spacing: 0;
+    }
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: var(--warn);
+    }
+    .dot.ok { background: var(--accent); }
+    main {
+      width: min(1180px, calc(100vw - 28px));
+      margin: 22px auto 40px;
+      display: grid;
+      gap: 16px;
+    }
+    .toolbar, section {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+    .toolbar {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 10px;
+      padding: 14px;
+      align-items: center;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    section {
+      padding: 16px;
+      min-width: 0;
+    }
+    label {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 680;
+      margin-bottom: 6px;
+    }
+    input, textarea, select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 10px 11px;
+      color: var(--text);
+      background: #fff;
+      font: inherit;
+      min-height: 40px;
+    }
+    textarea { min-height: 92px; resize: vertical; }
+    button {
+      border: 0;
+      border-radius: 7px;
+      background: var(--accent);
+      color: #fff;
+      min-height: 40px;
+      padding: 0 14px;
+      font-weight: 720;
+      cursor: pointer;
+    }
+    button.secondary {
+      background: var(--surface-soft);
+      color: var(--accent-dark);
+      border: 1px solid #cce1d8;
+    }
+    button:hover { filter: brightness(0.96); }
+    .fields {
+      display: grid;
+      grid-template-columns: 1.3fr 1fr auto;
+      gap: 10px;
+      align-items: end;
+    }
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+    }
+    .metric {
+      background: var(--surface-soft);
+      border: 1px solid #d7e7df;
+      border-radius: var(--radius);
+      padding: 14px;
+      min-height: 84px;
+    }
+    .metric strong {
+      display: block;
+      font-size: 28px;
+      line-height: 1.1;
+      margin-bottom: 8px;
+    }
+    .metric span { color: var(--muted); }
+    .system-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+    }
+    .system-item {
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 11px;
+      background: #fff;
+      min-height: 72px;
+    }
+    .system-item strong {
+      display: block;
+      font-size: 17px;
+      margin-top: 3px;
+    }
+    .system-item span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 680;
+    }
+    .service-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 10px;
+    }
+    .service-card {
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #fff;
+      padding: 11px;
+      min-height: 132px;
+      display: grid;
+      gap: 7px;
+      align-content: start;
+    }
+    .service-card strong {
+      display: block;
+      font-size: 16px;
+      word-break: break-word;
+    }
+    .service-card small {
+      color: var(--muted);
+      display: block;
+      min-height: 18px;
+      word-break: break-word;
+    }
+    .badge {
+      justify-self: start;
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 12px;
+      font-weight: 720;
+      background: #f8ece8;
+      color: var(--danger);
+    }
+    .badge.running {
+      background: var(--surface-soft);
+      color: var(--accent-dark);
+    }
+    .service-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 2px;
+    }
+    .service-actions button {
+      min-height: 32px;
+      padding: 0 10px;
+      font-size: 12px;
+    }
+    .logs {
+      background: #101614;
+      color: #eaf4ef;
+      border-radius: 7px;
+      padding: 12px;
+      max-height: 280px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      margin: 12px 0 0;
+    }
+    .list {
+      display: grid;
+      gap: 8px;
+      max-height: 330px;
+      overflow: auto;
+      padding-right: 2px;
+    }
+    .row {
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 10px;
+      background: #fff;
+    }
+    .row-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 4px;
+    }
+    .content { white-space: pre-wrap; word-break: break-word; }
+    .answer {
+      background: #f9fbfa;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 12px;
+      min-height: 110px;
+      white-space: pre-wrap;
+    }
+    .muted { color: var(--muted); }
+    .error { color: var(--danger); }
+    .stack { display: grid; gap: 10px; }
+    @media (max-width: 820px) {
+      header, .toolbar, .fields { grid-template-columns: 1fr; align-items: stretch; }
+      header { display: grid; padding: 16px; }
+      .grid, .summary, .system-grid, .service-grid { grid-template-columns: 1fr; }
+      main { width: min(100vw - 20px, 1180px); margin-top: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>WhatsApp Agent Dashboard</h1>
+    <div class="status"><span id="healthDot" class="dot"></span><span id="healthText">checking</span></div>
+  </header>
+  <main>
+    <div class="toolbar">
+      <div>
+        <label for="apiKey">API key</label>
+        <input id="apiKey" type="password" autocomplete="off" placeholder="X-WA-Agent-Key">
+      </div>
+      <button id="saveKey" class="secondary" type="button">Save key</button>
+      <button id="refresh" type="button">Refresh</button>
+    </div>
+
+    <section>
+      <h2>Overview</h2>
+      <div class="summary">
+        <div class="metric"><strong id="groupCount">-</strong><span>groups</span></div>
+        <div class="metric"><strong id="userCount">-</strong><span>users</span></div>
+        <div class="metric"><strong id="importCount">-</strong><span>imports</span></div>
+        <div class="metric"><strong id="messageCount">-</strong><span>messages</span></div>
+      </div>
+      <p id="dbStatus" class="muted" style="margin:12px 0 0">Database: checking</p>
+      <div class="service-actions" style="margin-top:12px">
+        <button class="secondary" type="button" data-db-action="backup">Backup DB</button>
+        <button class="secondary" type="button" data-db-action="sync_evolution_groups">Sync Group Names</button>
+        <button class="secondary" type="button" data-db-action="cleanup_empty_live_batches">Cleanup Empty Imports</button>
+        <button class="secondary" type="button" data-db-action="vacuum">Vacuum</button>
+      </div>
+      <p id="dbMaintenance" class="muted" style="margin:10px 0 0">Maintenance: no action yet</p>
+    </section>
+
+    <section>
+      <h2>Pi Status</h2>
+      <div class="system-grid">
+        <div class="system-item"><span>Uptime</span><strong id="uptime">-</strong></div>
+        <div class="system-item"><span>CPU load</span><strong id="loadAverage">-</strong></div>
+        <div class="system-item"><span>CPU temp</span><strong id="temperature">-</strong></div>
+        <div class="system-item"><span>Memory</span><strong id="memory">-</strong></div>
+        <div class="system-item"><span>Data disk</span><strong id="dataDisk">-</strong></div>
+        <div class="system-item"><span>Evolution API</span><strong id="evolutionStatus">-</strong></div>
+      </div>
+      <p id="systemDetail" class="muted" style="margin:12px 0 0">System: checking</p>
+    </section>
+
+    <section>
+      <h2>Docker Services</h2>
+      <div id="dockerServices" class="service-grid"></div>
+      <p id="dockerLogTitle" class="muted" style="margin:12px 0 0">Logs: select a service</p>
+      <pre id="dockerLogs" class="logs">No logs loaded</pre>
+    </section>
+
+    <div class="grid">
+      <section>
+        <h2>Search Messages</h2>
+        <div class="fields">
+          <div>
+            <label for="searchText">Query</label>
+            <input id="searchText" placeholder="SKU-001, shipment, delay">
+          </div>
+          <div>
+            <label for="groupName">Group</label>
+            <input id="groupName" placeholder="UK Team">
+          </div>
+          <button id="runSearch" type="button">Search</button>
+        </div>
+        <div id="messages" class="list" style="margin-top:12px"></div>
+      </section>
+
+      <section>
+        <h2>Ask Agent</h2>
+        <div class="stack">
+          <textarea id="question" placeholder="ใครสั่งสินค้า SKU-001 ครั้งล่าสุด"></textarea>
+          <button id="runAsk" type="button">Ask</button>
+          <div id="answer" class="answer muted">No answer yet</div>
+        </div>
+      </section>
+    </div>
+
+    <div class="grid">
+      <section>
+        <h2>Recent Imports</h2>
+        <div id="imports" class="list"></div>
+      </section>
+      <section>
+        <h2>Users</h2>
+        <div id="users" class="list"></div>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    const els = {
+      apiKey: document.getElementById('apiKey'),
+      healthDot: document.getElementById('healthDot'),
+      healthText: document.getElementById('healthText'),
+      groupCount: document.getElementById('groupCount'),
+      userCount: document.getElementById('userCount'),
+      importCount: document.getElementById('importCount'),
+      messageCount: document.getElementById('messageCount'),
+      dbStatus: document.getElementById('dbStatus'),
+      uptime: document.getElementById('uptime'),
+      loadAverage: document.getElementById('loadAverage'),
+      temperature: document.getElementById('temperature'),
+      memory: document.getElementById('memory'),
+      dataDisk: document.getElementById('dataDisk'),
+      evolutionStatus: document.getElementById('evolutionStatus'),
+      systemDetail: document.getElementById('systemDetail'),
+      dockerServices: document.getElementById('dockerServices'),
+      dockerLogTitle: document.getElementById('dockerLogTitle'),
+      dockerLogs: document.getElementById('dockerLogs'),
+      dbMaintenance: document.getElementById('dbMaintenance'),
+      messages: document.getElementById('messages'),
+      imports: document.getElementById('imports'),
+      users: document.getElementById('users'),
+      searchText: document.getElementById('searchText'),
+      groupName: document.getElementById('groupName'),
+      question: document.getElementById('question'),
+      answer: document.getElementById('answer'),
+    };
+
+    els.apiKey.value = localStorage.getItem('waAgentApiKey') || '';
+    document.getElementById('saveKey').addEventListener('click', () => {
+      localStorage.setItem('waAgentApiKey', els.apiKey.value.trim());
+      refreshAll();
+    });
+    document.getElementById('refresh').addEventListener('click', refreshAll);
+    document.getElementById('runSearch').addEventListener('click', runSearch);
+    document.getElementById('runAsk').addEventListener('click', runAsk);
+    els.dockerServices.addEventListener('click', handleDockerAction);
+    document.querySelectorAll('[data-db-action]').forEach(button => {
+      button.addEventListener('click', () => runDbMaintenance(button.dataset.dbAction));
+    });
+
+    function headers(extra = {}) {
+      const key = els.apiKey.value.trim();
+      return key ? {...extra, 'X-WA-Agent-Key': key} : extra;
+    }
+
+    async function api(path, options = {}) {
+      const res = await fetch(path, {...options, headers: headers(options.headers || {})});
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      return data;
+    }
+
+    function row(topLeft, topRight, content) {
+      return `<div class="row"><div class="row-top"><span>${escapeHtml(topLeft)}</span><span>${escapeHtml(topRight || '')}</span></div><div class="content">${escapeHtml(content || '')}</div></div>`;
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+    }
+
+    async function checkHealth() {
+      try {
+        const data = await api('/health');
+        els.healthDot.classList.add('ok');
+        els.healthText.textContent = data.status;
+      } catch (err) {
+        els.healthDot.classList.remove('ok');
+        els.healthText.textContent = 'offline';
+      }
+    }
+
+    async function refreshAll() {
+      await checkHealth();
+      try {
+        const [groups, users, imports, system, docker] = await Promise.all([
+          api('/groups'),
+          api('/users?limit=20'),
+          api('/imports?limit=20'),
+          api('/system/status'),
+          api('/docker/containers'),
+        ]);
+        const db = await api('/db/status');
+        const counts = db.database.counts || {};
+        els.groupCount.textContent = counts.groups ?? groups.groups.length;
+        els.userCount.textContent = counts.users ?? users.users.length;
+        els.importCount.textContent = counts.import_batches ?? imports.imports.length;
+        els.messageCount.textContent = counts.messages ?? '-';
+        els.dbStatus.textContent = `Database: ${db.database.db_path}`;
+        renderSystem(system.system);
+        renderDocker(docker.docker);
+        els.users.innerHTML = users.users.map(u => row(u.display_name, `${u.msg_count} messages`, u.normalized_name)).join('') || '<p class="muted">No users</p>';
+        els.imports.innerHTML = imports.imports.map(i => row(i.group_name, i.imported_at, `${i.file_name} | new ${i.new_messages} | duplicate ${i.duplicate_messages}`)).join('') || '<p class="muted">No imports</p>';
+      } catch (err) {
+        els.imports.innerHTML = `<p class="error">${escapeHtml(err.message)}</p>`;
+        els.users.innerHTML = `<p class="error">${escapeHtml(err.message)}</p>`;
+        els.dockerServices.innerHTML = `<p class="error">${escapeHtml(err.message)}</p>`;
+      }
+    }
+
+    function renderSystem(system) {
+      const memory = system.memory;
+      const dataDisk = system.disk && system.disk.data_dir;
+      const load = system.load_average || [];
+      els.uptime.textContent = formatDuration(system.uptime_seconds);
+      els.loadAverage.textContent = load.length ? load.map(n => Number(n).toFixed(2)).join(' / ') : '-';
+      els.temperature.textContent = system.temperature_c == null ? 'n/a' : `${system.temperature_c} C`;
+      els.memory.textContent = memory ? `${memory.used_percent}% used` : 'n/a';
+      els.dataDisk.textContent = dataDisk ? `${dataDisk.used_percent}% used` : 'n/a';
+      els.evolutionStatus.textContent = system.integrations && system.integrations.evolution_reachable ? 'reachable' : 'not reachable';
+      els.systemDetail.textContent = `Host: ${system.hostname} | Python ${system.python_version} | data ${system.app.data_dir}`;
+    }
+
+    function renderDocker(docker) {
+      if (!docker || !docker.available) {
+        const message = docker && docker.error ? docker.error : 'Docker status unavailable';
+        els.dockerServices.innerHTML = `<p class="muted">${escapeHtml(message)}</p>`;
+        return;
+      }
+      els.dockerServices.innerHTML = docker.containers.map(container => {
+        const running = container.state === 'running';
+        const ports = (container.ports || []).join(', ') || 'internal';
+        const restartButton = container.restart_allowed
+          ? `<button type="button" data-action="restart" data-name="${escapeHtml(container.name)}">Restart</button>`
+          : '';
+        return `
+          <div class="service-card">
+            <span class="badge ${running ? 'running' : ''}">${escapeHtml(container.state || 'unknown')}</span>
+            <strong>${escapeHtml(container.name)}</strong>
+            <small>${escapeHtml(container.status || '')}</small>
+            <small>${escapeHtml(ports)}</small>
+            <div class="service-actions">
+              <button class="secondary" type="button" data-action="logs" data-name="${escapeHtml(container.name)}">Logs</button>
+              ${restartButton}
+            </div>
+          </div>
+        `;
+      }).join('') || '<p class="muted">No allowed containers</p>';
+    }
+
+    async function handleDockerAction(event) {
+      const button = event.target.closest('button[data-action]');
+      if (!button) return;
+      const name = button.dataset.name;
+      if (button.dataset.action === 'logs') {
+        await loadDockerLogs(name);
+        return;
+      }
+      if (button.dataset.action === 'restart') {
+        if (!window.confirm(`Restart ${name}?`)) return;
+        button.disabled = true;
+        try {
+          await api('/docker/restart', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name}),
+          });
+          els.dockerLogTitle.textContent = `Logs: ${name}`;
+          els.dockerLogs.textContent = `${name} restart requested. Refreshing status...`;
+          setTimeout(refreshAll, 1600);
+        } catch (err) {
+          els.dockerLogs.textContent = err.message;
+        } finally {
+          button.disabled = false;
+        }
+      }
+    }
+
+    async function loadDockerLogs(name) {
+      els.dockerLogTitle.textContent = `Logs: ${name}`;
+      els.dockerLogs.textContent = 'Loading logs...';
+      try {
+        const data = await api(`/docker/logs?name=${encodeURIComponent(name)}&tail=120`);
+        els.dockerLogs.textContent = data.docker_logs.logs || 'No logs';
+      } catch (err) {
+        els.dockerLogs.textContent = err.message;
+      }
+    }
+
+    async function runDbMaintenance(action) {
+      const labels = {
+        backup: 'Backup DB',
+        sync_evolution_groups: 'Sync Group Names',
+        cleanup_empty_live_batches: 'Cleanup Empty Imports',
+        vacuum: 'Vacuum DB',
+      };
+      if (action !== 'backup' && !window.confirm(`${labels[action] || action}?`)) return;
+      els.dbMaintenance.textContent = `Maintenance: running ${labels[action] || action}...`;
+      try {
+        const data = await api('/db/maintenance', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({action}),
+        });
+        const result = data.maintenance;
+        els.dbMaintenance.textContent = `Maintenance: ${formatMaintenanceResult(result)}`;
+        await refreshAll();
+      } catch (err) {
+        els.dbMaintenance.textContent = `Maintenance error: ${err.message}`;
+      }
+    }
+
+    function formatMaintenanceResult(result) {
+      if (result.action === 'backup') {
+        return `backup saved to ${result.backup_path} (${formatBytes(result.size_bytes)})`;
+      }
+      if (result.action === 'cleanup_empty_live_batches') {
+        return `deleted ${result.deleted_rows} empty imports (${result.before_batches} -> ${result.after_batches})`;
+      }
+      if (result.action === 'sync_evolution_groups') {
+        return `synced ${result.remote_groups} groups, updated ${result.updated}, renamed ${result.renamed}, merged ${result.merged}, inserted ${result.inserted}`;
+      }
+      if (result.action === 'vacuum') {
+        return `vacuum saved ${formatBytes(result.saved_bytes)} (${formatBytes(result.before_size_bytes)} -> ${formatBytes(result.after_size_bytes)})`;
+      }
+      return JSON.stringify(result);
+    }
+
+    function formatBytes(bytes) {
+      const value = Number(bytes || 0);
+      if (value >= 1024 * 1024 * 1024) return `${(value / 1024 / 1024 / 1024).toFixed(2)} GB`;
+      if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(2)} MB`;
+      if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`;
+      return `${value} B`;
+    }
+
+    function formatDuration(seconds) {
+      if (seconds == null) return 'n/a';
+      const value = Number(seconds);
+      const days = Math.floor(value / 86400);
+      const hours = Math.floor((value % 86400) / 3600);
+      const minutes = Math.floor((value % 3600) / 60);
+      if (days > 0) return `${days}d ${hours}h`;
+      if (hours > 0) return `${hours}h ${minutes}m`;
+      return `${minutes}m`;
+    }
+
+    async function runSearch() {
+      const params = new URLSearchParams();
+      if (els.searchText.value.trim()) params.set('q', els.searchText.value.trim());
+      if (els.groupName.value.trim()) params.set('group_name', els.groupName.value.trim());
+      params.set('limit', '20');
+      try {
+        const data = await api(`/messages/search?${params.toString()}`);
+        els.messages.innerHTML = data.messages.map(m => row(m.sender_name || 'System', m.sent_at, m.content_raw)).join('') || '<p class="muted">No messages</p>';
+      } catch (err) {
+        els.messages.innerHTML = `<p class="error">${escapeHtml(err.message)}</p>`;
+      }
+    }
+
+    async function runAsk() {
+      const question = els.question.value.trim();
+      if (!question) return;
+      els.answer.textContent = 'Thinking...';
+      try {
+        const data = await api('/agent/ask', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({question, group_name: els.groupName.value.trim() || undefined, limit: 8}),
+        });
+        const cites = (data.citations || []).map(c => `- ${c.sent_at} | ${c.sender}: ${c.content_raw}`).join('\n');
+        els.answer.classList.remove('muted');
+        els.answer.textContent = `${data.answer}\n\nCitations:\n${cites || '-'}`;
+      } catch (err) {
+        els.answer.classList.add('error');
+        els.answer.textContent = err.message;
+      }
+    }
+
+    refreshAll();
+  </script>
+</body>
+</html>"""
