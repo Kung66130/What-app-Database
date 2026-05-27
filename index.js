@@ -1,5 +1,6 @@
 require('dotenv').config();
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const https = require('https');
 const { Client, LocalAuth } = require('whatsapp-web.js');
