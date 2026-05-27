@@ -6,8 +6,11 @@ Write-Host "Note: When prompted, enter the password: 0967471344"
 Write-Host ""
 
 $sshCommand = @"
+echo 'Updating system packages and installing Chromium browser (Required for Pi)...'
+sudo apt-get update && sudo apt-get install -y chromium-browser
+
 echo 'Updating code from GitHub...'
-cd ~/Raspbery-Pi5/what-app-database 2>/dev/null || cd ~/what-app-database 2>/dev/null || { echo 'Directory not found'; exit 1; }
+cd ~/what-app-database 2>/dev/null || { echo 'Directory ~/what-app-database not found'; exit 1; }
 git pull origin main
 
 echo 'Installing Node.js dependencies...'
@@ -15,6 +18,10 @@ npm install
 
 echo 'Restarting wa-agent service...'
 sudo systemctl restart wa-agent
+
+echo 'Starting Node TTS background process...'
+pkill -f "node index.js"
+nohup node index.js > tts_node.log 2>&1 &
 
 echo '====================================='
 echo 'Deployment completed successfully!'
