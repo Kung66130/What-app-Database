@@ -168,10 +168,13 @@ const executablePath = require('os').platform() === 'linux' ?
 
 const client = new Client({
     authStrategy: new LocalAuth(),
+    authTimeoutMs: 120000,
+    qrMaxRetries: 5,
     puppeteer: {
         executablePath: executablePath,
         headless: true,
-        protocolTimeout: 120000,
+        timeout: 0,
+        protocolTimeout: 240000,
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
