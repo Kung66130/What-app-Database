@@ -8,6 +8,52 @@ const qrcode = require('qrcode-terminal');
 const googleTTS = require('google-tts-api');
 const sound = require('sound-play');
 
+// Translate text to Thai using Gemini API if it contains non-Thai characters
+function translateToThai(text) {
+    return new Promise((resolve) => {
+        // Detect if text is mostly Thai already (Thai unicode range: \u0E00-\u0E7F)
+        const thaiChars = (text.match(/[\u0E00-\u0E7F]/g) || []).length;
+        const totalChars = text.replace(/\s/g, '').length;
+        if (totalChars === 0 || thaiChars / totalChars > 0.5) {
+            return resolve(text); // Already Thai, skip translation
+        }
+
+        const apiKey = process.env.GEMINI_API_KEY;
+        if (!apiKey) return resolve(text);
+
+        const body = JSON.stringify({
+            contents: [{
+                parts: [{ text: `Translate the following message to Thai. Return ONLY the translated text, nothing else:\n\n${text}` }]
+            }]
+        });
+
+        const options = {
+            hostname: 'generativelanguage.googleapis.com',
+            path: `/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+        };
+
+        const req = https.request(options, (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
+                try {
+                    const json = JSON.parse(data);
+                    const translated = json.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+                    console.log(`[Translate] "${text}" => "${translated}"`);
+                    resolve(translated || text);
+                } catch (e) {
+                    resolve(text);
+                }
+            });
+        });
+        req.on('error', () => resolve(text));
+        req.write(body);
+        req.end();
+    });
+}
+
 // Create a temporary directory to store downloaded speech audio files
 const tempDir = path.join(__dirname, 'temp');
 if (!fs.existsSync(tempDir)) {
@@ -219,7 +265,8 @@ client.on('message', async (msg) => {
             }
 
             console.log(`[New Group Message] [${groupName}] ${senderName}: ${messageText}`);
-            speechString = `ในกลุ่ม ${groupName} คุณ ${senderName} ส่งข้อความว่า ${messageText}`;
+            const translatedText = await translateToThai(messageText);
+            speechString = `ในกลุ่ม ${groupName} คุณ ${senderName} ส่งข้อความว่า ${translatedText}`;
         } else {
             // Private Chat context
             if (targetGroups.length > 0) {
@@ -227,7 +274,8 @@ client.on('message', async (msg) => {
             }
 
             console.log(`[New Private Message] ${senderName}: ${messageText}`);
-            speechString = `คุณ ${senderName} ส่งข้อความว่า ${messageText}`;
+            const translatedText = await translateToThai(messageText);
+            speechString = `คุณ ${senderName} ส่งข้อความว่า ${translatedText}`;
         }
 
         // Add formatted speech to queue
