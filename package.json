@@ -4,11 +4,14 @@
   "description": "WhatsApp Text-to-Speech (TTS) Reader on Windows (Relocated)",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "pair:qr": "node get_qr.js",
+    "pair:code": "node get_pairing_code.js"
   },
   "dependencies": {
     "dotenv": "^17.4.2",
     "google-tts-api": "^2.0.2",
+    "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",
     "sound-play": "^1.1.0",
     "whatsapp-web.js": "^1.26.0"

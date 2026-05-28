@@ -222,10 +222,8 @@ client.on('ready', async () => {
     audioQueue.enqueue('ระบบวอตส์แอปทีทีเอสพร้อมทำงานแล้วค่ะ');
 });
 
-// Event: Message received
-client.on('message', async (msg) => {
-    // Skip messages sent by oneself
-    if (msg.fromMe) return;
+// Event: Message created (receives both incoming and outgoing messages for testing)
+client.on('message_create', async (msg) => {
 
     try {
         const chat = await msg.getChat();
