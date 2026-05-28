@@ -206,13 +206,14 @@ client.on('message', async (msg) => {
 
         let speechString = '';
 
-        const targetGroup = process.env.TARGET_GROUP_NAME;
+        const targetGroupsStr = process.env.TARGET_GROUP_NAME;
+        const targetGroups = targetGroupsStr ? targetGroupsStr.split(',').map(g => g.trim()) : [];
 
         if (chat.isGroup) {
             // Group Chat context
             const groupName = chat.name || 'กลุ่มแชต';
             
-            if (targetGroup && groupName !== targetGroup) {
+            if (targetGroups.length > 0 && !targetGroups.includes(groupName)) {
                 return; // Ignore messages from other groups
             }
 
@@ -220,7 +221,7 @@ client.on('message', async (msg) => {
             speechString = `ในกลุ่ม ${groupName} คุณ ${senderName} ส่งข้อความว่า ${messageText}`;
         } else {
             // Private Chat context
-            if (targetGroup) {
+            if (targetGroups.length > 0) {
                 return; // Ignore private messages if a target group is set
             }
 
