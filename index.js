@@ -103,7 +103,9 @@ class AudioQueue {
 const audioQueue = new AudioQueue();
 
 // Initialize WhatsApp Client with Local Authentication
-const executablePath = require('os').platform() === 'linux' ? '/usr/bin/chromium-browser' : undefined;
+const executablePath = require('os').platform() === 'linux' ? 
+    (require('fs').existsSync('/usr/bin/chromium') ? '/usr/bin/chromium' : '/usr/bin/chromium-browser') 
+    : undefined;
 
 const client = new Client({
     authStrategy: new LocalAuth(),
