@@ -140,14 +140,58 @@ client.on('auth_failure', (msg) => {
 });
 
 // Event: Client is ready
-client.on('ready', () => {
+client.on('ready', async () => {
     console.log('\n======================================================================');
     console.log('[System] ระบบ WhatsApp TTS Reader พร้อมทำงานแล้ว!');
     console.log('[System] กำลังรอข้อความใหม่...');
     console.log('======================================================================\n');
     
     // Play system ready notification
-    audioQueue.enqueue('ระบบวอตส์แอปทีทีเอสพร้อมทำงานแล้วค่ะ');
+    audioQueue.enqueue('ระบบวอตส์แอปทีทีเอสพร้อมทำงานแล้วค่ะ เริ่มการทดสอบอ่านข้อความเก่า');
+
+    const targetGroup = process.env.TARGET_GROUP_NAME;
+    if (targetGroup) {
+        try {
+            const chats = await client.getChats();
+            const groupChat = chats.find(c => c.isGroup && c.name === targetGroup);
+            
+            if (groupChat) {
+                console.log(`[System] พบกลุ่มเป้าหมาย: ${targetGroup} กำลังดึงข้อความล่าสุดเพื่อทดสอบ...`);
+                const messages = await groupChat.fetchMessages({ limit: 2 });
+                
+                for (const msg of messages) {
+                    if (msg.fromMe) continue;
+                    
+                    const contact = await msg.getContact();
+                    const senderName = contact.pushname || contact.name || 'ไม่ทราบชื่อ';
+                    
+                    let messageText = '';
+                    if (msg.type === 'chat') {
+                        messageText = msg.body;
+                    } else if (msg.type === 'image') {
+                        messageText = 'ส่งรูปภาพ';
+                    } else if (msg.type === 'video') {
+                        messageText = 'ส่งวิดีโอ';
+                    } else if (msg.type === 'sticker') {
+                        messageText = 'ส่งสติกเกอร์';
+                    } else if (msg.type === 'audio' || msg.type === 'voice') {
+                        messageText = 'ส่งข้อความเสียง';
+                    } else {
+                        messageText = 'ส่งข้อความสื่อ';
+                    }
+
+                    if (!messageText.trim()) continue;
+
+                    const speechString = `ทดสอบข้อความเก่าจากคุณ ${senderName} ความว่า ${messageText}`;
+                    audioQueue.enqueue(speechString);
+                }
+            } else {
+                console.log(`[System] ไม่พบกลุ่มชื่อ: ${targetGroup}`);
+            }
+        } catch (error) {
+            console.error('[System Error] ไม่สามารถดึงข้อความเก่าได้:', error);
+        }
+    }
 });
 
 // Event: Message received
