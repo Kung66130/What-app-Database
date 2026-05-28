@@ -46,7 +46,7 @@ class AudioQueue {
             if (os.platform() === 'linux') {
                 const { exec } = require('child_process');
                 await new Promise((resolve) => {
-                    exec(`mpg123 "${filePath}"`, (error) => {
+                    exec(`mplayer -really-quiet -noconsolecontrols "${filePath}"`, (error) => {
                         if (error) console.error('[Audio Error]', error);
                         resolve();
                     });
