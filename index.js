@@ -115,7 +115,16 @@ const client = new Client({
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage'
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--disable-software-rasterizer',
+            '--disable-accelerated-2d-canvas',
+            '--disable-extensions',
+            '--mute-audio',
+            '--disable-sync',
+            '--disable-default-apps',
+            '--no-zygote',
+            '--single-process'
         ]
     }
 });
