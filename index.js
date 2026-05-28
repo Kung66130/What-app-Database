@@ -41,7 +41,20 @@ class AudioQueue {
             console.log(`[TTS] Processing text: "${text}"`);
             const filePath = await this.generateSpeechFile(text);
             console.log(`[Audio] Playing audio...`);
-            await sound.play(filePath);
+            
+            // Play audio based on OS
+            if (os.platform() === 'linux') {
+                const { exec } = require('child_process');
+                await new Promise((resolve) => {
+                    exec(`mpg123 "${filePath}"`, (error) => {
+                        if (error) console.error('[Audio Error]', error);
+                        resolve();
+                    });
+                });
+            } else {
+                await sound.play(filePath);
+            }
+            
             console.log(`[Audio] Playback finished.`);
             
             // Clean up the temporary audio file after playing
