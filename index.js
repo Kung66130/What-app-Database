@@ -212,6 +212,7 @@ client.on('message', async (msg) => {
         if (chat.isGroup) {
             // Group Chat context
             const groupName = chat.name || 'กลุ่มแชต';
+            console.log(`[Debug] Incoming from group: "${groupName}"`);
             
             if (targetGroups.length > 0 && !targetGroups.includes(groupName)) {
                 return; // Ignore messages from other groups
