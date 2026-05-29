@@ -193,7 +193,8 @@ class AudioQueue {
                 if (os.platform() === 'linux') {
                     const { exec } = require('child_process');
                     await new Promise((resolve, reject) => {
-                        exec(`mplayer -really-quiet -noconsolecontrols "${filePath}"`, (error) => {
+                        const envVars = 'PULSE_SERVER=unix:/run/user/1004/pulse/native';
+                        exec(`${envVars} mplayer -really-quiet -noconsolecontrols "${filePath}"`, (error) => {
                             if (error) reject(error);
                             else resolve();
                         });
