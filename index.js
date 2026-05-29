@@ -125,6 +125,16 @@ function splitTextIntoTTSChunks(text, maxLength = 180) {
     });
 }
 
+// Helper function to detect language for dynamic TTS voice selection
+function detectLanguage(text) {
+    const thaiChars = (text.match(/[\u0E00-\u0E7F]/g) || []).length;
+    const englishChars = (text.match(/[a-zA-Z]/g) || []).length;
+    if (englishChars > thaiChars) {
+        return 'en';
+    }
+    return 'th';
+}
+
 // Queue system to manage sequential audio playback (avoids voices overlapping)
 class AudioQueue {
     constructor() {
@@ -148,8 +158,9 @@ class AudioQueue {
         }
 
         for (const chunk of chunks) {
-            logWithTimestamp('INFO', `[Queue] Added message to queue: "${chunk}"`);
-            this.queue.push(chunk);
+            const lang = detectLanguage(chunk);
+            logWithTimestamp('INFO', `[Queue] Added message to queue: "${chunk}" [Lang: ${lang}]`);
+            this.queue.push({ text: chunk, lang: lang });
         }
         
         this.processQueue();
@@ -162,7 +173,9 @@ class AudioQueue {
         }
 
         this.isPlaying = true;
-        const text = this.queue.shift();
+        const item = this.queue.shift();
+        const text = item.text;
+        const lang = item.lang;
 
         // Error handling fallback: up to 3 retries for robust playback
         let attempt = 0;
@@ -172,8 +185,8 @@ class AudioQueue {
         while (attempt < 3 && !success) {
             attempt++;
             try {
-                logWithTimestamp('INFO', `[TTS] Processing text (Attempt ${attempt}/3): "${text}"`);
-                filePath = await this.generateSpeechFile(text);
+                logWithTimestamp('INFO', `[TTS] Processing text (Attempt ${attempt}/3) [Lang: ${lang}]: "${text}"`);
+                filePath = await this.generateSpeechFile(text, lang);
                 logWithTimestamp('INFO', `[Audio] Playing audio...`);
                 
                 // Play audio based on OS
@@ -226,11 +239,11 @@ class AudioQueue {
     }
 
     // Download TTS audio and return the file path
-    generateSpeechFile(text) {
+    generateSpeechFile(text, lang = 'th') {
         return new Promise(async (resolve, reject) => {
             try {
                 const url = googleTTS.getAudioUrl(text, {
-                    lang: 'th',
+                    lang: lang,
                     slow: false,
                     host: 'https://translate.google.com',
                     timeout: 8000,
