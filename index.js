@@ -422,8 +422,29 @@ client.on('message_create', async (msg) => {
     await handleIncomingMessage(msg, true);
 });
 
+// Function to robustly delete Chromium lock files that prevent session persistence
+function cleanupSingletonLocks() {
+    const authDir = path.join(__dirname, '.wwebjs_auth');
+    const sessionDir = path.join(authDir, 'session');
+    if (fs.existsSync(sessionDir)) {
+        try {
+            const files = fs.readdirSync(sessionDir);
+            for (const file of files) {
+                if (file.startsWith('Singleton')) {
+                    const filePath = path.join(sessionDir, file);
+                    fs.unlinkSync(filePath);
+                    logWithTimestamp('INFO', `[Cleanup] Cleaned up stale lock file: ${file}`);
+                }
+            }
+        } catch (e) {
+            logWithTimestamp('WARN', `[Cleanup] Warning clearing lock files: ${e.message}`);
+        }
+    }
+}
+
 // Start WhatsApp Client
 logWithTimestamp('INFO', '[System] กำลังเริ่มต้นระบบ WhatsApp Client (อาจใช้เวลาสักครู่ในการเริ่มเบราว์เซอร์)...');
+cleanupSingletonLocks();
 client.initialize().catch(err => {
     logWithTimestamp('ERROR', '[System Fatal Error] ไม่สามารถเริ่มต้น WhatsApp Client ได้:', err);
 });

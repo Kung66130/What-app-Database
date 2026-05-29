@@ -9,7 +9,7 @@ $setupCommand = "sudo apt-get update && sudo apt-get install -y chromium && cd ~
 ssh -t admin@100.123.233.122 $setupCommand
 
 echo 'Restarting wa-agent service...'
-$sshCommand = "sudo systemctl restart wa-agent 2>/dev/null; pkill -f 'node index.js'; cd ~/what-app-database && nohup node index.js > tts_node.log 2>&1 &"
+$sshCommand = "sudo systemctl restart wa-agent 2>/dev/null; pkill -f 'node index.js'; cd ~/what-app-database && find .wwebjs_auth -name 'Singleton*' -delete 2>/dev/null; nohup node index.js > tts_node.log 2>&1 &"
 ssh admin@100.123.233.122 $sshCommand
 
 Write-Host ""

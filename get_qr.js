@@ -5,6 +5,7 @@ const qrcode = require('qrcode-terminal');
 
 const os = require('os');
 const fs = require('fs');
+const path = require('path');
 
 function resolveLinuxChromiumPath() {
     if (os.platform() !== 'linux') return undefined;
@@ -78,4 +79,25 @@ client.on('ready', () => {
     process.exit(0);
 });
 
+// Function to robustly delete Chromium lock files that prevent session persistence
+function cleanupSingletonLocks() {
+    const authDir = dataPath || path.join(__dirname, '.wwebjs_auth');
+    const sessionDir = path.join(authDir, 'session');
+    if (fs.existsSync(sessionDir)) {
+        try {
+            const files = fs.readdirSync(sessionDir);
+            for (const file of files) {
+                if (file.startsWith('Singleton')) {
+                    const filePath = path.join(sessionDir, file);
+                    fs.unlinkSync(filePath);
+                    console.log(`[Cleanup] Cleaned up stale lock file: ${file}`);
+                }
+            }
+        } catch (e) {
+            console.warn(`[Cleanup] Warning clearing lock files: ${e.message}`);
+        }
+    }
+}
+
+cleanupSingletonLocks();
 client.initialize();
