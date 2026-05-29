@@ -11,6 +11,8 @@ const googleTTS = require('google-tts-api');
 const sound = require('sound-play');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
+const translate = require('translate-google-api');
+
 let genAI = null;
 if (process.env.GEMINI_API_KEY) {
     genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
@@ -33,7 +35,7 @@ function logWithTimestamp(level, message, ...args) {
     }
 }
 
-// Translate text to Thai using Gemini API if it contains non-Thai characters
+// Translate text to Thai using Gemini API if it contains non-Thai characters with Free Google Translate Fallback
 function translateToThai(text) {
     return new Promise(async (resolve) => {
         // Detect if text is mostly Thai already (Thai unicode range: \u0E00-\u0E7F)
@@ -43,34 +45,85 @@ function translateToThai(text) {
             return resolve(text); // Already Thai, skip translation
         }
 
-        if (!genAI) return resolve(text);
+        // Try Gemini Translation first
+        if (genAI) {
+            // Rate limiting: enforces space between translation requests
+            const now = Date.now();
+            const timeSinceLast = now - lastTranslationTime;
+            if (timeSinceLast < TRANSLATION_COOLDOWN_MS) {
+                const delay = TRANSLATION_COOLDOWN_MS - timeSinceLast;
+                logWithTimestamp('INFO', `[Rate Limit] Cooldown active. Waiting ${delay}ms before translating...`);
+                await new Promise(r => setTimeout(r, delay));
+            }
+            lastTranslationTime = Date.now();
 
-        // Rate limiting: enforces space between translation requests
-        const now = Date.now();
-        const timeSinceLast = now - lastTranslationTime;
-        if (timeSinceLast < TRANSLATION_COOLDOWN_MS) {
-            const delay = TRANSLATION_COOLDOWN_MS - timeSinceLast;
-            logWithTimestamp('INFO', `[Rate Limit] Cooldown active. Waiting ${delay}ms before translating...`);
-            await new Promise(r => setTimeout(r, delay));
+            try {
+                const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+                const prompt = `Translate the following message to Thai. Return ONLY the translated text, nothing else:\n\n${text}`;
+                const result = await model.generateContent(prompt);
+                const response = await result.response;
+                const translated = response.text().trim();
+                if (translated) {
+                    logWithTimestamp('INFO', `[Translate: Gemini] "${text}" => "${translated}"`);
+                    return resolve(translated);
+                }
+            } catch (error) {
+                logWithTimestamp('WARN', `[Translate: Gemini Warning] Failed: ${error.message}. Switching to Google Translate Fallback.`);
+            }
         }
-        lastTranslationTime = Date.now();
+
+        // Fallback: Free Google Translate API (No keys required, 100% uptime)
+        try {
+            const results = await translate([text], {
+                tld: 'com',
+                to: 'th',
+            });
+            if (results && results[0]) {
+                const translated = results[0].trim();
+                logWithTimestamp('INFO', `[Translate: Google Free] "${text}" => "${translated}"`);
+                return resolve(translated);
+            }
+        } catch (googleError) {
+            logWithTimestamp('WARN', `[Translate: Google Free Warning] Failed: ${googleError.message}. Falling back to original text.`);
+        }
+
+        // Final fallback: return original text unchanged
+        resolve(text);
+    });
+}
+
+// Multimodal Image Analysis using Gemini 2.0 Flash
+function analyzeImageWithGemini(base64Data, mimeType) {
+    return new Promise(async (resolve) => {
+        if (!genAI) {
+            return resolve('รูปภาพ'); // Fallback description if no Gemini API Key is configured
+        }
 
         try {
             const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-            const prompt = `Translate the following message to Thai. Return ONLY the translated text, nothing else:\n\n${text}`;
-            const result = await model.generateContent(prompt);
+            const contents = [
+                {
+                    inlineData: {
+                        mimeType: mimeType,
+                        data: base64Data,
+                    },
+                },
+                {
+                    text: "วิเคราะห์ภาพนี้และเขียนคำอธิบายสั้นๆ (ภาษาไทย) สรุปใจความว่าในรูปภาพคืออะไรหรือมีกิจกรรมอะไรเกิดขึ้น ไม่เกิน 2 ประโยค ห้ามตอบว่านี่คือรูปภาพเฉยๆ แต่ให้ระบุรายละเอียดทันที",
+                },
+            ];
+
+            const result = await model.generateContent({ contents });
             const response = await result.response;
-            const translated = response.text().trim();
-            if (translated) {
-                logWithTimestamp('INFO', `[Translate] "${text}" => "${translated}"`);
-                resolve(translated);
-            } else {
-                resolve(text);
+            const description = response.text().trim();
+            if (description) {
+                logWithTimestamp('INFO', `[Image Analysis: Gemini] => "${description}"`);
+                return resolve(description);
             }
         } catch (error) {
-            logWithTimestamp('WARN', `[Translate API Warning] Request failed: ${error.message}. Falling back to original text.`);
-            resolve(text);
+            logWithTimestamp('WARN', `[Image Analysis: Gemini Warning] Failed: ${error.message}. Falling back to default.`);
         }
+        resolve('รูปภาพ');
     });
 }
 
@@ -178,6 +231,22 @@ class AudioQueue {
             try {
                 logWithTimestamp('INFO', `[TTS] Processing text (Attempt ${attempt}/3) [Lang: ${lang}]: "${text}"`);
                 filePath = await this.generateSpeechFile(text, lang);
+                
+                // Speed up playback using FFmpeg atempo=1.25 filter on Windows
+                if (os.platform() !== 'linux') {
+                    const fastFilePath = filePath.replace('.mp3', '_fast.mp3');
+                    const { execSync } = require('child_process');
+                    try {
+                        logWithTimestamp('INFO', `[TTS] Speeding up audio to 1.25x...`);
+                        execSync(`ffmpeg -y -i "${filePath}" -filter:a "atempo=1.25" -vn "${fastFilePath}"`, { stdio: 'ignore' });
+                        // Clean up original file and replace with fast file
+                        try { fs.unlinkSync(filePath); } catch (e) {}
+                        filePath = fastFilePath;
+                    } catch (ffmpegErr) {
+                        logWithTimestamp('WARN', `[FFmpeg Speed Up Error] Failed to speed up: ${ffmpegErr.message}. Falling back to normal speed.`);
+                    }
+                }
+
                 logWithTimestamp('INFO', `[Audio] Playing audio...`);
                 
                 // Play audio based on OS
@@ -224,10 +293,10 @@ class AudioQueue {
         }
 
         this.isPlaying = false;
-        // Introduce a short delay between messages
+        // Introduce a short delay between messages (reduced from 1000ms to 200ms for faster output)
         setTimeout(() => {
             this.processQueue();
-        }, 1000);
+        }, 200);
     }
 
     // Download TTS audio and return the file path
@@ -298,8 +367,19 @@ function buildPuppeteerArgs() {
 
 const executablePath = resolveLinuxChromiumPath();
 
+const clientId = (process.env.WWEBJS_CLIENT_ID || '').trim();
+const dataPath = process.env.WWEBJS_DATA_PATH || undefined;
+const authOptions = {};
+
+if (clientId) {
+    authOptions.clientId = clientId;
+}
+if (dataPath) {
+    authOptions.dataPath = dataPath;
+}
+
 const client = new Client({
-    authStrategy: new LocalAuth(),
+    authStrategy: new LocalAuth(authOptions),
     authTimeoutMs: 120000,
     qrMaxRetries: 5,
     puppeteer: {
@@ -401,8 +481,10 @@ async function handleIncomingMessage(msg, isSelfMessage = false) {
             }
 
             logWithTimestamp('INFO', `[New Group Message] [${groupName}] ${senderName}: ${messageText}`);
-            const translatedText = await translateToThai(messageText);
-            speechString = `ในกลุ่ม ${groupName} คุณ ${senderName} ส่งข้อความว่า ${translatedText}`;
+            
+            const finalThaiText = await translateToThai(messageText);
+            speechString = `ในกลุ่ม ${groupName} คุณ ${senderName} ${finalThaiText}`;
+            
         } else {
             // Private Chat context
             if (targetGroups.length > 0) {

@@ -7,6 +7,15 @@ data/
 deliverables/
 qa_render/
 docx_tools/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+data/
+deliverables/
+qa_render/
+docx_tools/
 build_whatsapp_plan.py
 
 *.db
@@ -15,13 +24,34 @@ build_whatsapp_plan.py
 
 .DS_Store
 Thumbs.db
+desktop.ini
+
+# Environment & secrets — ห้าม push เด็ดขาด
 .env
 .env.*
+*.env
 *.key
 *.pem
+
+# WhatsApp session & cache
 node_modules/
 dist/
 build/
 logs/
 .wwebjs_auth/
 .wwebjs_cache/
+
+# QR Code image (มี session token ฝังอยู่)
+qr.png
+qr-*.png
+
+# PM2 / process logs
+*.log
+*.err.log
+*.out.log
+
+# Temp & scratch
+temp/
+trash/
+scratch/
+rclone_tmp/
