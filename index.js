@@ -346,10 +346,19 @@ client.on('ready', async () => {
 async function handleIncomingMessage(msg, isSelfMessage = false) {
     try {
         const chat = await msg.getChat();
-        const contact = await msg.getContact();
         
-        // Sender's name
-        const senderName = contact.pushname || contact.name || 'ไม่ทราบชื่อ';
+        // Sender's name with robust fallback to prevent getAlternateUserWid crash
+        let senderName = 'ไม่ทราบชื่อ';
+        if (msg.fromMe) {
+            senderName = 'ฉันเอง';
+        } else {
+            try {
+                const contact = await msg.getContact();
+                senderName = contact.pushname || contact.name || 'ไม่ทราบชื่อ';
+            } catch (contactError) {
+                logWithTimestamp('WARN', `[Message Handler] Could not retrieve contact details: ${contactError.message}`);
+            }
+        }
         
         // Define media text representation
         let messageText = '';
