@@ -68,10 +68,18 @@ function translateToThai(text) {
             res.on('data', chunk => data += chunk);
             res.on('end', () => {
                 try {
+                    if (res.statusCode !== 200) {
+                        logWithTimestamp('WARN', `[Translate API Warning] Request failed with status ${res.statusCode}. Falling back to original text.`);
+                        return resolve(text);
+                    }
                     const json = JSON.parse(data);
                     const translated = json.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-                    logWithTimestamp('INFO', `[Translate] "${text}" => "${translated}"`);
-                    resolve(translated || text);
+                    if (translated) {
+                        logWithTimestamp('INFO', `[Translate] "${text}" => "${translated}"`);
+                        resolve(translated);
+                    } else {
+                        resolve(text);
+                    }
                 } catch (e) {
                     resolve(text);
                 }
