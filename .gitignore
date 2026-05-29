@@ -22,5 +22,6 @@ Thumbs.db
 node_modules/
 dist/
 build/
+logs/
 .wwebjs_auth/
 .wwebjs_cache/

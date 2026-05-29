@@ -1,3 +1,5 @@
+const { initFileLogger } = require('./logger');
+initFileLogger({ appName: 'whatsapp-tts-reader' });
 require('dotenv').config();
 const fs = require('fs');
 const os = require('os');
@@ -8,9 +10,26 @@ const qrcode = require('qrcode-terminal');
 const googleTTS = require('google-tts-api');
 const sound = require('sound-play');
 
+// Rate limiting state for Gemini translation API (seconds between translation requests)
+const TRANSLATION_COOLDOWN_MS = 2000;
+let lastTranslationTime = 0;
+
+// Log function that includes timestamp
+function logWithTimestamp(level, message, ...args) {
+    const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
+    const logMsg = `[${timestamp}] [${level}] ${message}`;
+    if (level === 'ERROR') {
+        console.error(logMsg, ...args);
+    } else if (level === 'WARN') {
+        console.warn(logMsg, ...args);
+    } else {
+        console.log(logMsg, ...args);
+    }
+}
+
 // Translate text to Thai using Gemini API if it contains non-Thai characters
 function translateToThai(text) {
-    return new Promise((resolve) => {
+    return new Promise(async (resolve) => {
         // Detect if text is mostly Thai already (Thai unicode range: \u0E00-\u0E7F)
         const thaiChars = (text.match(/[\u0E00-\u0E7F]/g) || []).length;
         const totalChars = text.replace(/\s/g, '').length;
@@ -20,6 +39,16 @@ function translateToThai(text) {
 
         const apiKey = process.env.GEMINI_API_KEY;
         if (!apiKey) return resolve(text);
+
+        // Rate limiting: enforces space between translation requests
+        const now = Date.now();
+        const timeSinceLast = now - lastTranslationTime;
+        if (timeSinceLast < TRANSLATION_COOLDOWN_MS) {
+            const delay = TRANSLATION_COOLDOWN_MS - timeSinceLast;
+            logWithTimestamp('INFO', `[Rate Limit] Cooldown active. Waiting ${delay}ms before translating...`);
+            await new Promise(r => setTimeout(r, delay));
+        }
+        lastTranslationTime = Date.now();
 
         const body = JSON.stringify({
             contents: [{
@@ -41,7 +70,7 @@ function translateToThai(text) {
                 try {
                     const json = JSON.parse(data);
                     const translated = json.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-                    console.log(`[Translate] "${text}" => "${translated}"`);
+                    logWithTimestamp('INFO', `[Translate] "${text}" => "${translated}"`);
                     resolve(translated || text);
                 } catch (e) {
                     resolve(text);
@@ -60,17 +89,69 @@ if (!fs.existsSync(tempDir)) {
     fs.mkdirSync(tempDir, { recursive: true });
 }
 
+// Helper to split a long message into chunks under 180 characters for safe Google TTS processing
+function splitTextIntoTTSChunks(text, maxLength = 180) {
+    if (text.length <= maxLength) return [text];
+    
+    const chunks = [];
+    let currentChunk = "";
+    
+    // Split by spaces or punctuation to keep words intact where possible
+    const words = text.split(/(\s+)/); 
+    
+    for (const word of words) {
+        if ((currentChunk + word).length > maxLength) {
+            if (currentChunk.trim()) {
+                chunks.push(currentChunk.trim());
+            }
+            currentChunk = word;
+        } else {
+            currentChunk += word;
+        }
+    }
+    
+    if (currentChunk.trim()) {
+        chunks.push(currentChunk.trim());
+    }
+    
+    // Fallback: If any single word was too long, split it by characters
+    return chunks.flatMap(chunk => {
+        if (chunk.length <= maxLength) return [chunk];
+        const subChunks = [];
+        for (let i = 0; i < chunk.length; i += maxLength) {
+            subChunks.push(chunk.substring(i, i + maxLength));
+        }
+        return subChunks;
+    });
+}
+
 // Queue system to manage sequential audio playback (avoids voices overlapping)
 class AudioQueue {
     constructor() {
         this.queue = [];
         this.isPlaying = false;
+        this.MAX_QUEUE_SIZE = 50; // Prevention of memory leak
     }
 
     // Add a text to the speech queue
     enqueue(text) {
-        console.log(`[Queue] Added message to queue: "${text}"`);
-        this.queue.push(text);
+        // Enforce maximum queue size
+        if (this.queue.length >= this.MAX_QUEUE_SIZE) {
+            logWithTimestamp('WARN', `[Queue] Limit reached (${this.MAX_QUEUE_SIZE}). Dropping oldest message to prevent leak.`);
+            this.queue.shift(); // Drop oldest
+        }
+
+        // Split long messages into safe chunks instead of silently truncating
+        const chunks = splitTextIntoTTSChunks(text, 180);
+        if (chunks.length > 1) {
+            logWithTimestamp('INFO', `[Queue] Splitting long message into ${chunks.length} chunks for clean TTS readout.`);
+        }
+
+        for (const chunk of chunks) {
+            logWithTimestamp('INFO', `[Queue] Added message to queue: "${chunk}"`);
+            this.queue.push(chunk);
+        }
+        
         this.processQueue();
     }
 
@@ -83,57 +164,76 @@ class AudioQueue {
         this.isPlaying = true;
         const text = this.queue.shift();
 
-        try {
-            console.log(`[TTS] Processing text: "${text}"`);
-            const filePath = await this.generateSpeechFile(text);
-            console.log(`[Audio] Playing audio...`);
-            
-            // Play audio based on OS
-            if (os.platform() === 'linux') {
-                const { exec } = require('child_process');
-                await new Promise((resolve) => {
-                    exec(`mplayer -really-quiet -noconsolecontrols "${filePath}"`, (error) => {
-                        if (error) console.error('[Audio Error]', error);
-                        resolve();
-                    });
-                });
-            } else {
-                await sound.play(filePath);
-            }
-            
-            console.log(`[Audio] Playback finished.`);
-            
-            // Clean up the temporary audio file after playing
+        // Error handling fallback: up to 3 retries for robust playback
+        let attempt = 0;
+        let success = false;
+        let filePath = null;
+
+        while (attempt < 3 && !success) {
+            attempt++;
             try {
-                fs.unlinkSync(filePath);
-            } catch (err) {
-                console.error(`[Cleanup] Failed to delete temp file: ${filePath}`, err);
+                logWithTimestamp('INFO', `[TTS] Processing text (Attempt ${attempt}/3): "${text}"`);
+                filePath = await this.generateSpeechFile(text);
+                logWithTimestamp('INFO', `[Audio] Playing audio...`);
+                
+                // Play audio based on OS
+                if (os.platform() === 'linux') {
+                    const { exec } = require('child_process');
+                    await new Promise((resolve, reject) => {
+                        exec(`mplayer -really-quiet -noconsolecontrols "${filePath}"`, (error) => {
+                            if (error) reject(error);
+                            else resolve();
+                        });
+                    });
+                } else {
+                    await sound.play(filePath);
+                }
+                
+                logWithTimestamp('INFO', `[Audio] Playback finished.`);
+                success = true; // Succeeded!
+            } catch (error) {
+                logWithTimestamp('ERROR', `[Queue Attempt ${attempt} Failed]`, error);
+                
+                // Graceful cleanup of file if created during failure
+                if (filePath && fs.existsSync(filePath)) {
+                    try { fs.unlinkSync(filePath); } catch (e) {}
+                    filePath = null;
+                }
+
+                if (attempt < 3) {
+                    logWithTimestamp('INFO', `[Queue] Retrying in 1.5s...`);
+                    await new Promise(r => setTimeout(r, 1500));
+                }
             }
-        } catch (error) {
-            console.error('[Queue Error]', error);
-        } finally {
-            this.isPlaying = false;
-            // Introduce a short delay between messages
-            setTimeout(() => {
-                this.processQueue();
-            }, 1000);
         }
+
+        // Clean up the temporary audio file after playing
+        if (filePath) {
+            try {
+                if (fs.existsSync(filePath)) {
+                    fs.unlinkSync(filePath);
+                }
+            } catch (err) {
+                logWithTimestamp('ERROR', `[Cleanup] Failed to delete temp file: ${filePath}`, err);
+            }
+        }
+
+        this.isPlaying = false;
+        // Introduce a short delay between messages
+        setTimeout(() => {
+            this.processQueue();
+        }, 1000);
     }
 
     // Download TTS audio and return the file path
     generateSpeechFile(text) {
         return new Promise(async (resolve, reject) => {
             try {
-                // Google TTS has a limit of 200 characters per request.
-                // We truncate or slice to safe length (180 chars) for stability, 
-                // but usually chat messages are within this limit.
-                const safeText = text.substring(0, 180);
-                
-                const url = googleTTS.getAudioUrl(safeText, {
+                const url = googleTTS.getAudioUrl(text, {
                     lang: 'th',
                     slow: false,
                     host: 'https://translate.google.com',
-                    timeout: 10000,
+                    timeout: 8000,
                 });
 
                 const filename = `speech_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp3`;
@@ -142,7 +242,7 @@ class AudioQueue {
                 const file = fs.createWriteStream(dest);
                 https.get(url, (response) => {
                     if (response.statusCode !== 200) {
-                        reject(new Error(`Failed to download audio. Google TTS responded with status: ${response.statusCode}`));
+                        reject(new Error(`Google TTS responded with status: ${response.statusCode}`));
                         return;
                     }
                     response.pipe(file);
@@ -162,9 +262,36 @@ class AudioQueue {
 const audioQueue = new AudioQueue();
 
 // Initialize WhatsApp Client with Local Authentication
-const executablePath = require('os').platform() === 'linux' ? 
-    (require('fs').existsSync('/usr/bin/chromium') ? '/usr/bin/chromium' : '/usr/bin/chromium-browser') 
-    : undefined;
+function resolveLinuxChromiumPath() {
+    if (os.platform() !== 'linux') return undefined;
+    const candidates = [
+        '/usr/bin/chromium',
+        '/usr/bin/chromium-browser',
+        '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable',
+    ];
+    for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) return candidate;
+    }
+    return undefined;
+}
+
+function buildPuppeteerArgs() {
+    const args = [
+        '--disable-dev-shm-usage',
+        '--mute-audio',
+        '--no-first-run',
+        '--no-default-browser-check',
+    ];
+
+    if (os.platform() === 'linux') {
+        args.unshift('--no-sandbox', '--disable-setuid-sandbox');
+    }
+
+    return args;
+}
+
+const executablePath = resolveLinuxChromiumPath();
 
 const client = new Client({
     authStrategy: new LocalAuth(),
@@ -175,56 +302,48 @@ const client = new Client({
         headless: true,
         timeout: 0,
         protocolTimeout: 240000,
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-gpu',
-            '--disable-software-rasterizer',
-            '--disable-accelerated-2d-canvas',
-            '--disable-extensions',
-            '--mute-audio',
-            '--disable-sync',
-            '--disable-default-apps',
-            '--no-zygote',
-            '--single-process'
-        ]
+        args: buildPuppeteerArgs()
     }
 });
 
 // Event: QR Code generated (scan with mobile app)
 client.on('qr', (qr) => {
-    console.log('\n======================================================================');
-    console.log('กรุณาสแกน QR Code ด้านล่างนี้ด้วยแอป WhatsApp บนโทรศัพท์ของคุณเพื่อเชื่อมต่อระบบ:');
-    console.log('======================================================================\n');
+    logWithTimestamp('INFO', '\n======================================================================');
+    logWithTimestamp('INFO', 'กรุณาสแกน QR Code ด้านล่างนี้ด้วยแอป WhatsApp บนโทรศัพท์ของคุณเพื่อเชื่อมต่อระบบ:');
+    logWithTimestamp('INFO', '======================================================================\n');
     
     qrcode.generate(qr, { small: true });
 });
 
 // Event: Successfully authenticated
 client.on('authenticated', () => {
-    console.log('[System] เข้าสู่ระบบ WhatsApp สำเร็จแล้ว!');
+    logWithTimestamp('INFO', '[System] เข้าสู่ระบบ WhatsApp สำเร็จแล้ว!');
 });
 
 // Event: Authentication failed
 client.on('auth_failure', (msg) => {
-    console.error('[System] การยืนยันตัวตนล้มเหลว:', msg);
+    logWithTimestamp('ERROR', '[System] การยืนยันตัวตนล้มเหลว:', msg);
 });
 
 // Event: Client is ready
 client.on('ready', async () => {
-    console.log('\n======================================================================');
-    console.log('[System] ระบบ WhatsApp TTS Reader พร้อมทำงานแล้ว!');
-    console.log('[System] กำลังรอข้อความใหม่...');
-    console.log('======================================================================\n');
+    logWithTimestamp('INFO', '\n======================================================================');
+    logWithTimestamp('INFO', '[System] ระบบ WhatsApp TTS Reader พร้อมทำงานแล้ว!');
+    logWithTimestamp('INFO', '[System] กำลังรอข้อความใหม่...');
+    logWithTimestamp('INFO', '======================================================================\n');
     
+    const readyTargetGroupsStr = process.env.TARGET_GROUP_NAME;
+    const readyTargetGroups = readyTargetGroupsStr ? readyTargetGroupsStr.split(',').map(g => g.trim()).filter(Boolean) : [];
+    if (readyTargetGroups.length > 0) {
+        logWithTimestamp('INFO', `[System] Active group filter: ${readyTargetGroups.join(', ')}`);
+    }
+
     // Play system ready notification
     audioQueue.enqueue('ระบบวอตส์แอปทีทีเอสพร้อมทำงานแล้วค่ะ');
 });
 
-// Event: Message created (receives both incoming and outgoing messages for testing)
-client.on('message_create', async (msg) => {
-
+// Centralized message handler function to remove duplicate code logic between message & message_create events
+async function handleIncomingMessage(msg, isSelfMessage = false) {
     try {
         const chat = await msg.getChat();
         const contact = await msg.getContact();
@@ -255,18 +374,19 @@ client.on('message_create', async (msg) => {
         let speechString = '';
 
         const targetGroupsStr = process.env.TARGET_GROUP_NAME;
-        const targetGroups = targetGroupsStr ? targetGroupsStr.split(',').map(g => g.trim()) : [];
+        const targetGroups = targetGroupsStr ? targetGroupsStr.split(',').map(g => g.trim()).filter(Boolean) : [];
 
         if (chat.isGroup) {
             // Group Chat context
             const groupName = chat.name || 'กลุ่มแชต';
-            console.log(`[Debug] Incoming from group: "${groupName}"`);
+            logWithTimestamp('INFO', `[Debug] Message from group: "${groupName}" fromMe=${msg.fromMe} selfTest=${isSelfMessage}`);
             
             if (targetGroups.length > 0 && !targetGroups.includes(groupName)) {
+                logWithTimestamp('INFO', `[Debug] Ignored group "${groupName}" because it is not in TARGET_GROUP_NAME.`);
                 return; // Ignore messages from other groups
             }
 
-            console.log(`[New Group Message] [${groupName}] ${senderName}: ${messageText}`);
+            logWithTimestamp('INFO', `[New Group Message] [${groupName}] ${senderName}: ${messageText}`);
             const translatedText = await translateToThai(messageText);
             speechString = `ในกลุ่ม ${groupName} คุณ ${senderName} ส่งข้อความว่า ${translatedText}`;
         } else {
@@ -275,7 +395,7 @@ client.on('message_create', async (msg) => {
                 return; // Ignore private messages if a target group is set
             }
 
-            console.log(`[New Private Message] ${senderName}: ${messageText}`);
+            logWithTimestamp('INFO', `[New Private Message] ${senderName}: ${messageText}`);
             const translatedText = await translateToThai(messageText);
             speechString = `คุณ ${senderName} ส่งข้อความว่า ${translatedText}`;
         }
@@ -284,12 +404,26 @@ client.on('message_create', async (msg) => {
         audioQueue.enqueue(speechString);
         
     } catch (error) {
-        console.error('[Message Handler Error]', error);
+        logWithTimestamp('ERROR', '[Message Handler Error]', error);
     }
+}
+
+// Event: Incoming message (more reliable than message_create for messages from others)
+client.on('message', async (msg) => {
+    // Only handle other people's messages here
+    if (msg.fromMe) return;
+    await handleIncomingMessage(msg, false);
+});
+
+// Event: Message created (receives both incoming and outgoing messages for testing)
+client.on('message_create', async (msg) => {
+    // Only handle self-testing messages here
+    if (!msg.fromMe) return;
+    await handleIncomingMessage(msg, true);
 });
 
 // Start WhatsApp Client
-console.log('[System] กำลังเริ่มต้นระบบ WhatsApp Client (อาจใช้เวลาสักครู่ในการเริ่มเบราว์เซอร์)...');
+logWithTimestamp('INFO', '[System] กำลังเริ่มต้นระบบ WhatsApp Client (อาจใช้เวลาสักครู่ในการเริ่มเบราว์เซอร์)...');
 client.initialize().catch(err => {
-    console.error('[System Fatal Error] ไม่สามารถเริ่มต้น WhatsApp Client ได้:', err);
+    logWithTimestamp('ERROR', '[System Fatal Error] ไม่สามารถเริ่มต้น WhatsApp Client ได้:', err);
 });

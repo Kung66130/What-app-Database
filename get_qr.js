@@ -1,3 +1,5 @@
+const { initFileLogger } = require('./logger');
+initFileLogger({ appName: 'whatsapp-qr' });
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 
