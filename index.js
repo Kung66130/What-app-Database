@@ -9,6 +9,12 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const googleTTS = require('google-tts-api');
 const sound = require('sound-play');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+
+let genAI = null;
+if (process.env.GEMINI_API_KEY) {
+    genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+}
 
 // Rate limiting state for Gemini translation API (seconds between translation requests)
 const TRANSLATION_COOLDOWN_MS = 2000;
@@ -37,8 +43,7 @@ function translateToThai(text) {
             return resolve(text); // Already Thai, skip translation
         }
 
-        const apiKey = process.env.GEMINI_API_KEY;
-        if (!apiKey) return resolve(text);
+        if (!genAI) return resolve(text);
 
         // Rate limiting: enforces space between translation requests
         const now = Date.now();
@@ -50,44 +55,22 @@ function translateToThai(text) {
         }
         lastTranslationTime = Date.now();
 
-        const body = JSON.stringify({
-            contents: [{
-                parts: [{ text: `Translate the following message to Thai. Return ONLY the translated text, nothing else:\n\n${text}` }]
-            }]
-        });
-
-        const options = {
-            hostname: 'generativelanguage.googleapis.com',
-            path: `/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
-        };
-
-        const req = https.request(options, (res) => {
-            let data = '';
-            res.on('data', chunk => data += chunk);
-            res.on('end', () => {
-                try {
-                    if (res.statusCode !== 200) {
-                        logWithTimestamp('WARN', `[Translate API Warning] Request failed with status ${res.statusCode}. Falling back to original text.`);
-                        return resolve(text);
-                    }
-                    const json = JSON.parse(data);
-                    const translated = json.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-                    if (translated) {
-                        logWithTimestamp('INFO', `[Translate] "${text}" => "${translated}"`);
-                        resolve(translated);
-                    } else {
-                        resolve(text);
-                    }
-                } catch (e) {
-                    resolve(text);
-                }
-            });
-        });
-        req.on('error', () => resolve(text));
-        req.write(body);
-        req.end();
+        try {
+            const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+            const prompt = `Translate the following message to Thai. Return ONLY the translated text, nothing else:\n\n${text}`;
+            const result = await model.generateContent(prompt);
+            const response = await result.response;
+            const translated = response.text().trim();
+            if (translated) {
+                logWithTimestamp('INFO', `[Translate] "${text}" => "${translated}"`);
+                resolve(translated);
+            } else {
+                resolve(text);
+            }
+        } catch (error) {
+            logWithTimestamp('WARN', `[Translate API Warning] Request failed: ${error.message}. Falling back to original text.`);
+            resolve(text);
+        }
     });
 }
 
